@@ -5,23 +5,23 @@ import { HelpCircle, ChevronDown } from 'lucide-react';
 const faqs = [
   {
     q: 'How does DeFiShield work?',
-    a: 'DeFiShield intercepts transactions before they are broadcast to the blockchain. It extracts 47 on-chain features using our DeFiTransLyzer module, then runs them through the AGA (Anomaly-Guided Analysis) model — a gradient-boosted ensemble trained on over 2 million labeled transactions. The entire process completes in under 100ms, providing a risk score and explainability breakdown.',
+    a: 'DeFiShield intercepts transactions before they are broadcast to the blockchain. It extracts 20 on-chain features using our DeFiTransLyzer pipeline, then evaluates them through a dual-model ensemble (Random Forest classifier and DeFiGuard neural network). The entire evaluation completes in milliseconds, providing a calibrated risk score and transparent explainability breakdown.',
   },
   {
     q: 'Can it detect new, unseen scams?',
-    a: 'Yes. The AGA model is trained on feature-level patterns rather than specific contract addresses or signatures, making it effective against zero-day exploits. It detects behavioral anomalies — such as unusual gas patterns, high contract entropy, and abnormal log structures — that are characteristic of novel attacks even if the exact exploit is new.',
+    a: 'Yes. The models are trained on feature-level structural and behavioral signals rather than static blacklists or contract signatures. It detects anomalous gas dynamics, drainer self-transfer patterns, and unusual transaction parameters that characterize novel zero-day attacks.',
   },
   {
     q: 'Does it require wallet transaction history?',
-    a: 'No. DeFiShield analyzes each transaction in isolation using only the transaction payload, target contract metadata, and on-chain state at the time of analysis. Wallet history is used as a supplementary feature but is not required for accurate risk assessment.',
+    a: 'No. DeFiShield analyzes each transaction in isolation using the transaction payload and parameters at the time of signature. Prior wallet history is not required for accurate fraud detection.',
   },
   {
     q: 'Is DeFiShield open source?',
-    a: 'The frontend and core API interface are open-sourced on GitHub. The AGA model weights and DeFiTransLyzer feature extractor are proprietary to protect against adversarial attempts to craft transactions that evade detection. We publish research papers describing our methodology and academic results.',
+    a: 'Yes. The full codebase — including the React frontend dashboard, FastAPI dual-model inference service, feature extraction pipeline, and test suite — is fully open source on GitHub.',
   },
   {
     q: 'Which blockchains are supported?',
-    a: 'DeFiShield currently supports Ethereum Mainnet and all major EVM-compatible chains including Polygon, Arbitrum, Optimism, Base, and BNB Smart Chain. Solana and Cosmos ecosystem support is on our Q3 2025 roadmap. Non-EVM chains require custom feature extractor development.',
+    a: 'DeFiShield supports Ethereum Mainnet and all EVM-compatible networks and testnets (such as Sepolia). Any transaction payload adhering to standard EVM parameters can be evaluated directly.',
   },
 ];
 

@@ -1,0 +1,15 @@
+{
+  "name": "web3-transaction-firewall",
+  "version": "2.0.0",
+  "description": "Real-time transaction firewall for EVM networks powered by dual-model ensemble",
+  "private": true,
+  "scripts": {
+    "dev": "bash demo.sh",
+    "start": "bash demo.sh",
+    "build": "npm --prefix frontend run build",
+    "frontend": "npm --prefix frontend run dev",
+    "backend": "cd backend && PYTHONPATH=. \"$PWD/../.venv/bin/python\" -m inference_engine.api.main",
+    "test": "cd backend && PYTHONPATH=. \"$PWD/../.venv/bin/pytest\" tests/ -v",
+    "lint": "npm --prefix frontend run lint"
+  }
+}

@@ -31,7 +31,7 @@ export default function Footer() {
               <span className="text-gradient">Today</span>
             </h2>
             <p className="text-gray-400 mb-8 max-w-xl mx-auto">
-              Join thousands of DeFi users who trust DeFiShield to guard their transactions. Free tier available. No credit card required.
+              Protect your wallet transactions in real time with machine learning intelligence and transparent risk explainability.
             </p>
             <div className="flex flex-wrap gap-4 justify-center">
               <motion.a

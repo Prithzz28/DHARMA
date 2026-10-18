@@ -1,5 +1,5 @@
-# Runtime dependencies for all three web3_firewall components.
-# Install with: pip install -r requirements_runtime.txt
+# Runtime dependencies for Web3 Transaction Firewall backend
+# Install with: pip install -r requirements.txt
 
 # ── Inference Engine ─────────────────────────────────────────────────────────
 fastapi>=0.110
@@ -10,8 +10,10 @@ pydantic-settings>=2.0
 scikit-learn>=1.3
 joblib>=1.3
 numpy>=1.24
+pandas>=2.0          # Used to suppress sklearn feature-name warnings in ensemble
+torch>=2.0           # PyTorch runtime for DeFiGuard neural network and GNN shims
 
-# ── RPC Proxy ────────────────────────────────────────────────────────────────
+# ── Network / HTTP Client ────────────────────────────────────────────────────
 aiohttp>=3.9
 httpx>=0.27
 

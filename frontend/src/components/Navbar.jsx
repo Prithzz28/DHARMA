@@ -1,19 +1,26 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Shield, Menu, X, Zap, Cpu } from 'lucide-react';
+import { Shield, Menu, X, Zap } from 'lucide-react';
 import { checkHealth } from '../services/api';
 
 const navLinks = [
   { name: 'Home', href: '#home' },
+  { name: 'Risk Scanner', href: '#ai-explanation' },
   { name: 'Features', href: '#features' },
+  { name: 'How It Works', href: '#how-it-works' },
   { name: 'Analytics', href: '#analytics' },
-  { name: 'Contact', href: '#footer' },
+  { name: 'FAQ', href: '#faq' },
 ];
 
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [healthStatus, setHealthStatus] = useState({ online: false, modelLoaded: false });
+  const [healthStatus, setHealthStatus] = useState({
+    online: false,
+    modelLoaded: false,
+    defiguardLoaded: false,
+    ensembleMode: 'max',
+  });
 
   useEffect(() => {
     const onScroll = () => {
@@ -32,17 +39,19 @@ export default function Navbar() {
           setHealthStatus({
             online: res.status === 'ok',
             modelLoaded: res.model_loaded,
+            defiguardLoaded: Boolean(res.defiguard_loaded),
+            ensembleMode: res.ensemble_mode || 'max',
           });
         }
       } catch {
         if (isMounted) {
-          setHealthStatus({ online: false, modelLoaded: false });
+          setHealthStatus({ online: false, modelLoaded: false, defiguardLoaded: false, ensembleMode: 'max' });
         }
       }
     };
 
     fetchHealth();
-    const interval = setInterval(fetchHealth, 15000);
+    const interval = setInterval(fetchHealth, 10000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -83,18 +92,6 @@ export default function Navbar() {
                 DeFi<span className="text-gradient-cyan">Shield</span>
               </span>
             </motion.a>
-
-            {/* API Status Badge */}
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10 text-xs font-mono">
-              <Cpu className={`w-3.5 h-3.5 ${healthStatus.online ? 'text-green-400' : 'text-gray-500'}`} />
-              <span className={healthStatus.online ? 'text-green-400' : 'text-gray-400'}>
-                {healthStatus.online
-                  ? healthStatus.modelLoaded
-                    ? 'Engine Ready'
-                    : 'Backend Online'
-                  : 'Engine Offline'}
-              </span>
-            </div>
           </div>
 
           {/* Desktop Nav */}
@@ -113,13 +110,13 @@ export default function Navbar() {
           {/* CTA */}
           <div className="hidden lg:flex items-center gap-3">
             <motion.a
-              href="#analytics"
+              href="#ai-explanation"
               className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white transition-all duration-300 hover:shadow-lg hover:shadow-cyan-500/30 hover:-translate-y-0.5"
               whileHover={{ scale: 1.03 }}
               whileTap={{ scale: 0.97 }}
             >
               <Zap className="w-4 h-4" />
-              Analytics
+              Scan Transaction
             </motion.a>
           </div>
 
@@ -155,12 +152,12 @@ export default function Navbar() {
                 </a>
               ))}
               <a
-                href="#analytics"
+                href="#ai-explanation"
                 onClick={() => setMobileOpen(false)}
                 className="mt-2 flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white"
               >
                 <Zap className="w-4 h-4" />
-                Analytics
+                Scan Transaction
               </a>
             </div>
           </motion.div>

@@ -2,7 +2,7 @@
 """
 inference_engine/services/explainer.py
 ========================================
-AI-powered risk explanation service for the Web3 Transaction Firewall.
+Automated risk explanation service for the Web3 Transaction Firewall.
 
 Gathers structured transaction risk signals, redacts sensitive address data,
 and generates human-readable risk explanations via LLM (or rule-based fallback).
@@ -30,9 +30,9 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from inference_engine.core.config import settings
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+logger = logging.getLogger(__name__)
 
 
 def mask_address(address: Optional[str]) -> str:
@@ -65,7 +65,7 @@ def _build_rule_fallback_explanation(
     # Determine risk level (aligned with FRAUD_THRESHOLD=0.65)
     if is_fraud or fraud_probability >= 0.65:
         risk_level = "high"
-    elif fraud_probability >= 0.40:
+    elif fraud_probability >= 0.50:
         risk_level = "medium"
     else:
         risk_level = "low"
@@ -145,7 +145,8 @@ async def _call_groq_explainer(
     Groq provides free-tier access with very fast inference (~200ms).
     Get a free API key at: https://console.groq.com/keys
     """
-    if not GROQ_API_KEY:
+    api_key = settings.groq_api_key or os.getenv("GROQ_API_KEY", "")
+    if not api_key:
         return None
 
     masked_from = mask_address(raw_from)
@@ -196,7 +197,7 @@ async def _call_groq_explainer(
             resp = await client.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
                 json={

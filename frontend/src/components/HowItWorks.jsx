@@ -20,14 +20,14 @@ const steps = [
   {
     icon: Cpu,
     title: 'Feature Extraction',
-    description: 'DeFiTransLyzer extracts 47 on-chain features including contract entropy, gas patterns, and log structure.',
+    description: 'DeFiTransLyzer extracts 20 on-chain features including structural flags, gas dynamics, and value metrics.',
     color: 'from-teal-500 to-green-500',
     step: '03',
   },
   {
     icon: Brain,
-    title: 'AI Risk Analysis',
-    description: 'The AGA Model runs gradient-boosted analysis across all extracted features in milliseconds.',
+    title: 'ML Ensemble Risk Analysis',
+    description: 'The dual-model ensemble evaluates features across Random Forest and neural network models in milliseconds.',
     color: 'from-purple-500 to-violet-500',
     step: '04',
   },
@@ -164,7 +164,7 @@ export default function HowItWorks() {
         >
           {[
             { label: 'Total Pipeline Time', value: '<100ms' },
-            { label: 'Features Analyzed', value: '47 vectors' },
+            { label: 'Features Analyzed', value: '20 dimensions' },
             { label: 'ML Model Accuracy', value: '99.7%' },
             { label: 'False Positive Rate', value: '<0.1%' },
           ].map((item) => (

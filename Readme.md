@@ -1,55 +1,62 @@
 # Web3 Transaction Firewall 🛡️
 
-Real-time, AI-powered Ethereum transaction firewall. Intercepts JSON-RPC transaction requests from crypto wallets (e.g., MetaMask), extracts a 20-dimensional feature vector using DeFiTransLyzer heuristics, scores fraud risk via an AGA-optimised Random Forest classifier, and blocks malicious transactions before they are submitted to the blockchain.
+Real-time Ethereum transaction firewall. Evaluates transactions before execution, extracts a 20-dimensional feature vector using DeFiTransLyzer heuristics, scores fraud risk via a dual-model machine learning ensemble (Random Forest classifier + DeFiGuard neural network), and identifies malicious transactions before they compromise wallet funds.
 
 ---
 
 ## 🌟 Key Features
 
-- **Wallet-Level Interception:** Sits transparently as an Ethereum RPC Proxy (`:8545`) between user wallets (MetaMask, Rabby) and upstream blockchain nodes (Alchemy, Infura, Cloudflare).
-- **Sub-Millisecond ML Inference:** Fast scoring API (`:8001`) with in-memory Random Forest model evaluation (< 2 ms median latency).
-- **20-Feature DeFiTransLyzer Vector:** Dynamic extraction of structural, gas, block context, value, and log event metrics from raw transaction payloads.
+- **Dual-Model ML Ensemble:** Combines an optimized 200-tree Random Forest classifier with the DeFiGuard GNN + tabular fusion neural network for maximum recall and precision.
+- **Sub-Millisecond Inference:** Fast scoring API (`:8001`) with in-memory model evaluation (< 2 ms median latency).
+- **20-Feature DeFiTransLyzer Vector:** Dynamic extraction of structural, gas dynamics, block context, value transfer, and log event metrics.
 - **Fail-Closed Security:** Configurable fraud threshold (default `0.65`) with automatic blocking of phishing drainers, honeypots, and reentrancy exploits.
-- **Explainable AI (XAI):** Plain-language breakdown of risk factors (e.g., self-transfers, abnormal gas-to-base-fee ratios, drainer patterns) for end-users.
-- **Interactive UI Dashboard:** React + Vite + Tailwind CSS frontend (`:5173`) featuring a live transaction monitor, transaction simulator, risk analytics, and real-time alerts.
-- **1-Click Demo Launcher:** Automated shell script (`demo.sh`) to launch all services, run attack simulations, and inspect proxy terminal logs.
+- **Explainable Security (XAI):** Plain-language breakdown of risk factors (e.g., self-transfers, abnormal gas-to-base-fee ratios, drainer patterns) for wallet users.
+- **Interactive UI Dashboard:** Modern React + Vite + Tailwind CSS frontend (`:5173`) featuring an interactive transaction scanner, attack simulation presets, risk analytics, and real-time engine health indicators.
+- **1-Click Demo Launcher:** Automated shell script (`demo.sh`) to launch backend and frontend services with a single command.
 
 ---
 
 ## 🏗️ Architecture
 
 ```
- MetaMask / Web3 Wallet
-       │
-       │ HTTP POST (eth_sendTransaction / eth_sendRawTransaction)
-       ▼
- ┌────────────────────────┐
- │   RPC Proxy (:8545)    │
- └───────────┬────────────┘
-             │ 1. Extract raw tx payload
-             ▼
- ┌────────────────────────┐
- │   Feature Extractor    │ ──── 20-dimensional feature vector
- └───────────┬────────────┘
-             │ 2. POST /predict
-             ▼
- ┌────────────────────────┐
- │ Inference Engine:8001  │ ──── AGA Random Forest Model (.joblib)
- └───────────┬────────────┘
-             │ 3. Fraud Probability + Verdict
-             ▼
-    ┌─────────────────┐
-    │ Decision Engine │
-    └────────┬────────┘
-             │
-      ┌──────┴────────────────────────┐
-      │                               │
-   [BLOCKED]                       [ALLOWED]
-(Fraud Prob > 0.65)           (Fraud Prob <= 0.65)
-      │                               │
-      ▼                               ▼
- Return JSON-RPC Error         Forward to Upstream Node
- (to MetaMask / Wallet)       (Alchemy / Cloudflare / Sepolia)
+ User Request / Web Dashboard / Transaction Payload
+                       │
+                       │ JSON Payload (From, To, Value, Gas)
+                       ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │           Interactive Web Dashboard (:5173)                 │
+ └─────────────────────────────┬───────────────────────────────┘
+                               │
+                               │ POST /predict or /predict/explain
+                               ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │           FastAPI Inference Engine (:8001)                  │
+ ├─────────────────────────────────────────────────────────────┤
+ │   Feature Extraction & Normalization (20 Features)          │
+ ├─────────────────────────────┬───────────────────────────────┤
+ │                             ▼                               │
+ │   ┌─────────────────────────────┐ ┌───────────────────────┐ │
+ │   │ Random Forest Model (.joblib)│ │ DeFiGuard Net (.joblib)│ │
+ │   │ 200 Estimators (Tabular)    │ │ (GNN + Tabular Fusion)│ │
+ │   └──────────────┬──────────────┘ └───────────┬───────────┘ │
+ │                  │                            │             │
+ │                  └──────────────┬─────────────┘             │
+ │                                 ▼                           │
+ │                     Dual-Model Ensemble Scorer              │
+ │                     (Strategy: Max Recall / Weighted)       │
+ ├─────────────────────────────────────────────────────────────┤
+ │   Explainer Engine (Deterministic Heuristics + Groq API)    │
+ └─────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+               ┌───────────────────────────────┐
+               │                               │
+            [BLOCKED]                       [SAFE]
+        (Fraud Prob > 0.65)           (Fraud Prob <= 0.65)
+               │                               │
+               ▼                               ▼
+        Threat Detected                 Safe to Sign
+        + Feature Breakdown             + Normal Parameters
 ```
 
 ---
@@ -60,28 +67,29 @@ Real-time, AI-powered Ethereum transaction firewall. Intercepts JSON-RPC transac
 .
 ├── backend/
 │   ├── download_model.py              # Automated download of trained RF model from GDrive
-│   ├── models/                        # Pre-trained Random Forest model directory (.joblib)
-│   └── web3_firewall/
-│       ├── feature_extractor/         # DeFiTransLyzer feature extraction pipeline
-│       │   ├── extractor.py           # Raw RPC & tx payload parser
-│       │   └── metrics.py             # Feature computation helper utilities
-│       ├── inference_engine/          # FastAPI inference & explainability service
-│       │   ├── api/                   # API routes (main.py, schemas.py, dependencies.py)
-│       │   ├── core/                  # Configuration & settings management
-│       │   └── services/              # Prediction engine & AI risk explainer
-│       ├── rpc_proxy/                 # aiohttp Ethereum RPC proxy server
-│       │   ├── handler.py             # Interception logic & upstream RPC forwarding
-│       │   └── proxy.py               # JSON-RPC server with rich ANSI terminal logging
-│       ├── tests/                     # Comprehensive test suite (extractor, inference, proxy)
-│       ├── conftest.py                # Pytest configuration & environment fixtures
-│       └── requirements_runtime.txt   # Backend Python runtime dependencies
+│   ├── models/                        # Pre-trained models (.joblib) & DeFiGuard stub modules
+│   │   ├── random_forest_fraud_model.joblib
+│   │   ├── defi_guard_model.joblib
+│   │   ├── defiguard.py
+│   │   └── predictor.py
+│   ├── feature_extractor/             # DeFiTransLyzer feature extraction pipeline
+│   │   ├── extractor.py               # Raw RPC & tx payload parser
+│   │   └── metrics.py                 # Feature computation helper utilities
+│   ├── inference_engine/              # FastAPI dual-model inference & explainability service
+│   │   ├── api/                       # API routes (main.py, schemas.py, dependencies.py)
+│   │   ├── core/                      # Configuration & settings management (config.py)
+│   │   └── services/                  # Prediction service, ensemble scorer & risk explainer
+│   ├── torch_geometric/               # Lightweight local unpickling stubs
+│   ├── tests/                         # Backend test suite (extractor, inference, ensemble)
+│   ├── conftest.py                    # Pytest configuration & fixtures
+│   └── requirements.txt               # Backend Python runtime dependencies
 ├── frontend/                          # React + Vite + Tailwind CSS dashboard
 │   ├── src/
-│   │   ├── components/                # UI components (LiveMonitor, AIExplanation, Analytics, etc.)
-│   │   ├── services/api.js            # API client for inference engine, proxy & Alchemy
+│   │   ├── components/                # UI components (AIExplanation, Analytics, Hero, etc.)
+│   │   ├── services/api.js            # API client for inference engine
 │   │   └── App.jsx                    # Root application layout
 │   └── package.json                   # Frontend dependencies and scripts
-├── demo.sh                            # 1-Click demo launcher and attack simulation script
+├── demo.sh                            # 1-Click demo launcher for backend & frontend
 ├── .env.example                       # Template for environment variables
 └── Readme.md                          # Project documentation
 ```
@@ -99,10 +107,10 @@ Real-time, AI-powered Ethereum transaction firewall. Intercepts JSON-RPC transac
 
 ### Option 1: 1-Click Demo Launcher (Recommended)
 
-Start all services (Inference Engine on `:8001`, RPC Proxy on `:8545`, Vite Frontend on `:5173`):
+Start all services (Inference Engine on `:8001`, Vite Frontend on `:5173`):
 
 ```bash
-# 1. Download pre-trained model
+# 1. Download pre-trained model (if not already downloaded)
 cd backend && python download_model.py && cd ..
 
 # 2. Launch all services
@@ -122,7 +130,7 @@ Access the Web Dashboard at: **`http://localhost:5173`**
 ### Option 2: Manual Step-by-Step Setup
 
 #### 1. Download the Trained Model
-The pre-trained Random Forest model (~42 MB) is hosted on Google Drive:
+The pre-trained Random Forest model (~41 MB) is hosted on Google Drive:
 ```bash
 cd backend
 python download_model.py
@@ -132,25 +140,17 @@ cd ..
 #### 2. Configure Environment Variables
 ```bash
 cp .env.example .env
-# Optional: Add your custom Alchemy/Infura RPC endpoint in .env
 ```
 
 #### 3. Start the Backend Inference Engine
 ```bash
-cd backend/web3_firewall
-pip install -r requirements_runtime.txt
+cd backend
+pip install -r requirements.txt
 uvicorn inference_engine.api.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 *Interactive Swagger documentation available at: `http://localhost:8001/docs`*
 
-#### 4. Start the RPC Proxy Server (in a new terminal)
-```bash
-cd backend/web3_firewall
-python -m rpc_proxy.proxy
-```
-*The proxy will listen on `http://127.0.0.1:8545` and display live visual interception blocks.*
-
-#### 5. Start the Frontend Dashboard (in a new terminal)
+#### 4. Start the Frontend Dashboard (in a new terminal)
 ```bash
 cd frontend
 npm install
@@ -160,95 +160,119 @@ npm run dev
 
 ---
 
-## 🦊 MetaMask Wallet Setup
-
-To protect your wallet transactions in real time:
-
-1. Open **MetaMask** → **Settings** → **Networks** → **Add a network manually**.
-2. Enter the following parameters:
-   - **Network Name:** `Web3 Firewall (Local)`
-   - **New RPC URL:** `http://127.0.0.1:8545`
-   - **Chain ID:** `1` *(Ethereum Mainnet)* or `11155111` *(Sepolia Testnet)*
-   - **Currency Symbol:** `ETH`
-3. Save and switch to this network.
-
-Every transaction signed in MetaMask will now be evaluated by the firewall prior to reaching the network!
-
----
-
 ## 🧪 Attack Simulations & cURL Demos
 
-You can test the firewall directly against simulated transactions using `curl`:
+You can test the firewall inference engine directly using `curl`:
 
 ### 1. 🎣 Phishing Drainer (Self-Transfer + Abnormal Gas) → **BLOCKED**
 ```bash
-curl -s -X POST http://localhost:8545 \
+curl -s -X POST http://localhost:8001/predict \
   -H "Content-Type: application/json" \
   -d '{
-    "jsonrpc": "2.0", "id": 101,
-    "method": "eth_sendTransaction",
-    "params": [{
-      "from": "0x71C7656EC7ab88b098defB751B7401B5f6d8976F",
-      "to": "0x71C7656EC7ab88b098defB751B7401B5f6d8976F",
-      "gas": "0xcf080",
-      "gasPrice": "0x79a02206",
-      "value": "0x0",
-      "blockNumber": "0x18e97d"
-    }]
+    "length_transaction_hash": 66.0,
+    "length_to": 42.0,
+    "length_from": 42.0,
+    "is_same_address": 1.0,
+    "index": 1.0,
+    "block_number": 1650000.0,
+    "chain_id": 1.0,
+    "cumulative_gas_used": 848000.0,
+    "gas_used": 848000.0,
+    "gas_efficiency": 1.0,
+    "effective_gas_price": 204000000000.0,
+    "total_gas_cost": 172992000000000000.0,
+    "gas_price_ratio": 10.2,
+    "gas_per_log_event": 848000.0,
+    "value": 0.0,
+    "normalized_token_transfer": 0.0,
+    "log_count": 0.0,
+    "log_removed": 0.0,
+    "length_log": 0.0,
+    "event_activity_flag": 0.0
   }' | python3 -m json.tool
 ```
 
 ### 2. 🍯 Honeypot Scam (High Value + Inflated Gas Price) → **BLOCKED**
 ```bash
-curl -s -X POST http://localhost:8545 \
+curl -s -X POST http://localhost:8001/predict \
   -H "Content-Type: application/json" \
   -d '{
-    "jsonrpc": "2.0", "id": 102,
-    "method": "eth_sendTransaction",
-    "params": [{
-      "from": "0xAbCd1234abcd1234abcd1234abcd1234abcd1234",
-      "to": "0xDeaD000000000000000000000000000000000000",
-      "gas": "0x124f80",
-      "gasPrice": "0xba43b7400",
-      "value": "0x8ac7230489e80000",
-      "blockNumber": "0x19a3bf"
-    }]
+    "length_transaction_hash": 66.0,
+    "length_to": 42.0,
+    "length_from": 42.0,
+    "is_same_address": 0.0,
+    "index": 5.0,
+    "block_number": 1680319.0,
+    "chain_id": 1.0,
+    "cumulative_gas_used": 1200000.0,
+    "gas_used": 1020000.0,
+    "gas_efficiency": 0.85,
+    "effective_gas_price": 50000000000.0,
+    "total_gas_cost": 51000000000000000.0,
+    "gas_price_ratio": 2.5,
+    "gas_per_log_event": 1020000.0,
+    "value": 10000000000000000000.0,
+    "normalized_token_transfer": 0.01,
+    "log_count": 0.0,
+    "log_removed": 0.0,
+    "length_log": 0.0,
+    "event_activity_flag": 0.0
   }' | python3 -m json.tool
 ```
 
 ### 3. 🔄 Reentrancy Exploit (Excessive Gas Allocation) → **BLOCKED**
 ```bash
-curl -s -X POST http://localhost:8545 \
+curl -s -X POST http://localhost:8001/predict \
   -H "Content-Type: application/json" \
   -d '{
-    "jsonrpc": "2.0", "id": 103,
-    "method": "eth_sendTransaction",
-    "params": [{
-      "from": "0x1234567890abcdef1234567890abcdef12345678",
-      "to": "0xfedcba0987654321fedcba0987654321fedcba09",
-      "gas": "0x2625a0",
-      "gasPrice": "0x174876e800",
-      "value": "0x1bc16d674ec80000",
-      "blockNumber": "0x1a5c00"
-    }]
+    "length_transaction_hash": 66.0,
+    "length_to": 42.0,
+    "length_from": 42.0,
+    "is_same_address": 0.0,
+    "index": 12.0,
+    "block_number": 1727488.0,
+    "chain_id": 1.0,
+    "cumulative_gas_used": 2490000.0,
+    "gas_used": 2116500.0,
+    "gas_efficiency": 0.85,
+    "effective_gas_price": 100000000000.0,
+    "total_gas_cost": 211650000000000000.0,
+    "gas_price_ratio": 5.0,
+    "gas_per_log_event": 2116500.0,
+    "value": 2000000000000000000.0,
+    "normalized_token_transfer": 0.002,
+    "log_count": 0.0,
+    "log_removed": 0.0,
+    "length_log": 0.0,
+    "event_activity_flag": 0.0
   }' | python3 -m json.tool
 ```
 
 ### 4. ✅ Legitimate Transfer (Normal Parameters) → **ALLOWED**
 ```bash
-curl -s -X POST http://localhost:8545 \
+curl -s -X POST http://localhost:8001/predict \
   -H "Content-Type: application/json" \
   -d '{
-    "jsonrpc": "2.0", "id": 104,
-    "method": "eth_sendTransaction",
-    "params": [{
-      "from": "0xAbCd1234abcd1234abcd1234abcd1234abcd1234",
-      "to": "0xEfGh5678efgh5678efgh5678efgh5678efgh5678",
-      "gas": "0x5208",
-      "gasPrice": "0x4a817c800",
-      "value": "0xde0b6b3a7640000",
-      "blockNumber": "0x186a0"
-    }]
+    "length_transaction_hash": 66.0,
+    "length_to": 42.0,
+    "length_from": 42.0,
+    "is_same_address": 0.0,
+    "index": 2.0,
+    "block_number": 100000.0,
+    "chain_id": 1.0,
+    "cumulative_gas_used": 52500.0,
+    "gas_used": 21000.0,
+    "gas_efficiency": 1.0,
+    "effective_gas_price": 22000000000.0,
+    "total_gas_cost": 462000000000000.0,
+    "gas_price_ratio": 1.1,
+    "gas_per_log_event": 21000.0,
+    "value": 450000000000000000.0,
+    "normalized_token_transfer": 0.00045,
+    "log_count": 0.0,
+    "log_removed": 0.0,
+    "length_log": 0.0,
+    "event_activity_flag": 0.0
   }' | python3 -m json.tool
 ```
 
@@ -256,7 +280,7 @@ curl -s -X POST http://localhost:8545 \
 
 ## 📊 20-Feature DeFiTransLyzer Schema
 
-The Random Forest model evaluates transactions against 20 normalized structural and behavioral metrics:
+The ensemble evaluates transactions against 20 normalized structural and behavioral metrics:
 
 | Category | Feature Name | Description |
 |---|---|---|
@@ -285,35 +309,34 @@ The Random Forest model evaluates transactions against 20 normalized structural 
 
 ## ⚙️ Environment Variables
 
-Configure these in `.env` (or `backend/web3_firewall/.env`):
+Configure these in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
 | `VITE_API_BASE_URL` | `http://localhost:8001` | FastAPI inference API base URL for the frontend |
-| `VITE_RPC_PROXY_URL` | `http://localhost:8545` | Local RPC proxy URL for frontend demo simulation |
-| `INFERENCE_ENGINE_URL` | `http://127.0.0.1:8001` | Inference engine address called by RPC proxy |
-| `UPSTREAM_RPC_URL` | `https://eth-sepolia.g.alchemy.com/...` | Real upstream Ethereum RPC node (e.g. Alchemy/Infura) |
-| `PROXY_HOST` | `0.0.0.0` | RPC proxy network bind address |
-| `PROXY_PORT` | `8545` | RPC proxy listening port |
-| `MODEL_PATH` | `../models/random_forest_fraud_model.joblib` | Path to trained `.joblib` model file |
-| `FRAUD_THRESHOLD` | `0.65` | Probability cutoff above which transactions are blocked |
+| `MODEL_PATH` | `models/random_forest_fraud_model.joblib` | Path to trained Random Forest `.joblib` model file |
+| `DEFIGUARD_MODEL_PATH` | `models/defi_guard_model.joblib` | Path to trained DeFiGuard `.joblib` model file |
+| `ENSEMBLE_MODE` | `max` | Ensemble mode: `max`, `mean`, `weighted`, `rf_only`, `dg_only` |
+| `FRAUD_THRESHOLD` | `0.65` | Probability cutoff above which transactions are flagged |
 | `LOG_LEVEL` | `INFO` | Python logging verbosity (`DEBUG`, `INFO`, `WARNING`) |
+| `GROQ_API_KEY` | *(optional)* | API key for LLM-powered plain language risk explanations |
 
 ---
 
 ## 🧪 Running Tests
 
-To run the backend test suite across the feature extractor, inference engine, and RPC proxy:
+To run the backend test suite across the feature extractor, inference engine, and ensemble scorer:
 
 ```bash
-cd backend/web3_firewall
+cd backend
 pytest tests/ -v
 ```
 
-To run frontend linting and checks:
+To run frontend linting and production build checks:
 ```bash
 cd frontend
 npm run lint
+npm run build
 ```
 
 ---

@@ -37,7 +37,7 @@ ENV/
 *.onnx
 *.tflite
 *.pb
-backend/models/
+backend/models/*.joblib
 
 # Datasets (large files)
 backend/data/

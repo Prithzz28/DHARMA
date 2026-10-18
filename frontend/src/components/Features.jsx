@@ -16,11 +16,11 @@ const features = [
   },
   {
     icon: Brain,
-    title: 'AI Fraud Detection',
-    description: 'Detect zero-day exploits using our AGA machine learning model trained on millions of on-chain transactions and historical fraud patterns.',
+    title: 'ML Fraud Detection',
+    description: 'Detect zero-day exploits using an optimized dual-model ensemble trained on on-chain transactions and historical fraud patterns.',
     color: 'from-purple-500 to-violet-600',
     glow: 'rgba(139,92,246,0.2)',
-    badge: 'AI',
+    badge: 'ML',
   },
   {
     icon: Shield,
@@ -40,7 +40,7 @@ const features = [
   },
   {
     icon: MessageSquare,
-    title: 'Explainable AI',
+    title: 'Explainable Security',
     description: 'Every risk assessment comes with a human-readable explanation. Know exactly why a transaction is flagged as dangerous.',
     color: 'from-green-500 to-emerald-600',
     glow: 'rgba(34,197,94,0.2)',
@@ -49,7 +49,7 @@ const features = [
   {
     icon: Zap,
     title: 'Lightning Fast Analysis',
-    description: 'Complete multi-layer AI analysis in under 100 milliseconds. Security that never slows down your DeFi experience.',
+    description: 'Complete multi-layer analysis in under 100 milliseconds. Security that never slows down your DeFi experience.',
     color: 'from-yellow-500 to-orange-500',
     glow: 'rgba(234,179,8,0.2)',
     badge: 'Speed',
@@ -117,7 +117,7 @@ export default function Features() {
             className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass border border-cyan-500/20 text-sm text-cyan-400 font-medium mb-6"
           >
             <Shield className="w-4 h-4" />
-            Enterprise-Grade Protection
+            Security Protection
           </motion.div>
 
           <motion.h2
@@ -136,7 +136,7 @@ export default function Features() {
             transition={{ delay: 0.2 }}
             className="text-gray-400 text-lg max-w-2xl mx-auto"
           >
-            Six layers of AI-powered protection, working in harmony to secure every interaction with the blockchain.
+            Six layers of intelligent protection, working in harmony to secure every interaction with the blockchain.
           </motion.p>
         </div>
 

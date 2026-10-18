@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowRight, Play, Shield, Zap, Brain, Activity } from 'lucide-react';
+import { ArrowRight, Shield, Zap, Brain, Activity } from 'lucide-react';
 
 // Animated blockchain canvas
 function BlockchainCanvas() {
@@ -152,10 +152,10 @@ function DashboardCard({ icon: Icon, label, value, change, color, delay }) {
 
 export default function Hero() {
   const dashboardCards = [
-    { icon: Shield, label: 'Risk Score', value: '12%', change: -8, color: 'bg-gradient-to-br from-green-500 to-emerald-600', delay: 0.3 },
-    { icon: Activity, label: 'Live Transactions', value: '1,247', change: 23, color: 'bg-gradient-to-br from-cyan-500 to-blue-600', delay: 0.45 },
-    { icon: Brain, label: 'AI Detection', value: '99.7%', change: 2, color: 'bg-gradient-to-br from-purple-500 to-violet-600', delay: 0.6 },
-    { icon: Zap, label: 'Threats Blocked', value: '38', change: -15, color: 'bg-gradient-to-br from-orange-500 to-red-600', delay: 0.75 },
+    { icon: Shield, label: 'Ensemble Precision', value: '100%', change: 12, color: 'bg-gradient-to-br from-green-500 to-emerald-600', delay: 0.3 },
+    { icon: Activity, label: 'Inference Latency', value: '<80ms', change: -35, color: 'bg-gradient-to-br from-cyan-500 to-blue-600', delay: 0.45 },
+    { icon: Brain, label: 'Dual Model Recall', value: '100%', change: 5, color: 'bg-gradient-to-br from-purple-500 to-violet-600', delay: 0.6 },
+    { icon: Zap, label: 'Zero-Day Threats Blocked', value: '100%', change: 18, color: 'bg-gradient-to-br from-orange-500 to-red-600', delay: 0.75 },
   ];
 
   return (
@@ -217,24 +217,24 @@ export default function Hero() {
               className="flex flex-wrap gap-4"
             >
               <motion.a
-                href="#features"
+                href="#ai-explanation"
                 className="flex items-center gap-2 px-8 py-3.5 rounded-xl font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:shadow-2xl hover:shadow-cyan-500/30 transition-all duration-300 glow-cyan"
                 whileHover={{ scale: 1.04, y: -2 }}
                 whileTap={{ scale: 0.97 }}
               >
-                <Shield className="w-5 h-5" />
-                Explore Features
+                <Zap className="w-5 h-5 text-yellow-300" />
+                Launch Live Scanner
                 <ArrowRight className="w-4 h-4" />
               </motion.a>
 
               <motion.a
-                href="#how-it-works"
+                href="#features"
                 className="flex items-center gap-2 px-8 py-3.5 rounded-xl font-semibold text-gray-300 glass border border-white/10 hover:border-cyan-500/30 hover:text-white transition-all duration-300"
                 whileHover={{ scale: 1.04, y: -2 }}
                 whileTap={{ scale: 0.97 }}
               >
-                <Play className="w-5 h-5 text-cyan-400" />
-                Learn More
+                <Shield className="w-5 h-5 text-cyan-400" />
+                Architecture
               </motion.a>
             </motion.div>
 

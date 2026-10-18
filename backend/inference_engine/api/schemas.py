@@ -114,14 +114,45 @@ class TransactionFeatures(BaseModel):
 
 
 class PredictionResponse(BaseModel):
-    """Inference result returned by the /predict endpoint."""
+    """Inference result returned by the /predict endpoint.
 
-    is_fraud: bool = Field(description="True if the transaction is classified as fraudulent.")
+    The ``fraud_probability`` is the **ensemble** score — the best prediction
+    from both the Random Forest and DeFiGuard models according to the active
+    ensemble strategy (default: ``max`` of both scores).
+    """
+
+    is_fraud: bool = Field(
+        description="True if the ensemble fraud probability exceeds the configured threshold."
+    )
     fraud_probability: float = Field(
-        ge=0.0, le=1.0, description="Model confidence that the transaction is fraudulent."
+        ge=0.0,
+        le=1.0,
+        description="Ensemble fraud confidence score (0–1). Best-of-both-models result.",
     )
     exec_time_ms: float = Field(
-        ge=0.0, description="End-to-end inference latency in milliseconds."
+        ge=0.0, description="End-to-end ensemble inference latency in milliseconds."
+    )
+
+    # ----- Per-model breakdown ----- #
+    rf_score: float = Field(
+        ge=0.0,
+        le=1.0,
+        default=0.0,
+        description="Raw Random Forest fraud probability score.",
+    )
+    defiguard_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Raw DeFiGuard neural-network fraud probability score (None if model not loaded).",
+    )
+    ensemble_mode: str = Field(
+        default="rf_only",
+        description="Active ensemble combination strategy: max | mean | weighted | rf_only | dg_only.",
+    )
+    primary_model: str = Field(
+        default="random_forest",
+        description="Which model contributed the decisive (highest) score.",
     )
 
 
@@ -131,6 +162,18 @@ class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
     model_path: str
+    defiguard_loaded: bool = Field(
+        default=False,
+        description="True if the DeFiGuard model is loaded and contributing to ensemble scoring.",
+    )
+    defiguard_model_path: str = Field(
+        default="",
+        description="Resolved path to the loaded DeFiGuard model file.",
+    )
+    ensemble_mode: str = Field(
+        default="rf_only",
+        description="Active ensemble strategy.",
+    )
 
 
 class RiskExplanationRequest(BaseModel):
@@ -155,3 +198,27 @@ class RiskExplanationResponse(BaseModel):
 # Ensure Pydantic v2 type adapter resolves nested schemas under 'from __future__ import annotations'
 RiskExplanationRequest.model_rebuild()
 RiskExplanationResponse.model_rebuild()
+
+
+class StatsResponse(BaseModel):
+    """Live inference engine telemetry returned by GET /stats."""
+
+    total_predictions: int = Field(description="Total predictions served since startup.")
+    total_fraud: int = Field(description="Number of transactions flagged as fraud.")
+    fraud_rate_pct: float = Field(
+        ge=0.0, le=100.0, description="Fraud rate as a percentage of all predictions."
+    )
+    avg_latency_ms: float = Field(ge=0.0, description="Average ensemble inference latency (ms).")
+    uptime_seconds: float = Field(ge=0.0, description="Seconds since the engine started.")
+    ensemble_mode: str = Field(description="Currently active ensemble mode.")
+
+
+class ExtractionRequest(BaseModel):
+    """Raw Ethereum transaction payload for POST /extract."""
+
+    tx_payload: dict = Field(
+        description=(
+            "Raw JSON-RPC Ethereum transaction or receipt object. "
+            "Accepts eth_sendTransaction, eth_getTransactionReceipt, or mixed formats."
+        )
+    )
