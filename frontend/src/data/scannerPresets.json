@@ -1,0 +1,111 @@
+{
+  "generated_at": "2026-10-19",
+  "generated_by": "backend/scripts/build_scanner_presets.py",
+  "threshold": 0.8,
+  "source": "Real labelled transactions from the DeFiTransLyzer dataset (sender, hash, value, gas, block and log count from the dataset; recipient is a placeholder).",
+  "selection": "Rows whose /scan verdict matches their label; agreement rate over all candidates below.",
+  "agreement": {
+    "fraud": {
+      "candidates": 311,
+      "correct": 309,
+      "rate": 0.9936
+    },
+    "legit": {
+      "candidates": 286,
+      "correct": 182,
+      "rate": 0.6364
+    }
+  },
+  "presets": [
+    {
+      "label": "Fraud \u00b7 contract call (3 logs)",
+      "expected": "BLOCKED",
+      "probability": 0.962647,
+      "data": {
+        "from": "0xc1E6e4D9Fc0B7e555bb8634BcACc9A1067bEC039",
+        "to": "0x0000000000000000000000000000000000000001",
+        "amount": "0",
+        "gasPrice": "6",
+        "gasLimit": "111072",
+        "blockNumber": "7540868",
+        "hash": "0xc0f7f931cb30bf05cb0c476d89f0c21552af33898dfcaeb818d40ca6b38b5e6b",
+        "logCount": "3"
+      }
+    },
+    {
+      "label": "Fraud \u00b7 13.6451 ETH transfer",
+      "expected": "BLOCKED",
+      "probability": 0.972156,
+      "data": {
+        "from": "0xF4a2eFf88a408ff4c4550148151c33c93442619e",
+        "to": "0x0000000000000000000000000000000000000001",
+        "amount": "13.6451",
+        "gasPrice": "12",
+        "gasLimit": "30001",
+        "blockNumber": "5736068",
+        "hash": "0xd0577a39ec38584ecc2520957ea2bcbd02106ff5baa58cf0b848b4cf0913b489",
+        "logCount": "0"
+      }
+    },
+    {
+      "label": "Fraud \u00b7 contract call (5 logs)",
+      "expected": "BLOCKED",
+      "probability": 0.967685,
+      "data": {
+        "from": "0xbb53be0690ae7256833099a1f01125eb33445692",
+        "to": "0x0000000000000000000000000000000000000001",
+        "amount": "3",
+        "gasPrice": "60",
+        "gasLimit": "202035",
+        "blockNumber": "5013845",
+        "hash": "0x998a21a68b7ac9844fab76ff5dc381ac2683e01739ef33b77059b40b99321d85",
+        "logCount": "5"
+      }
+    },
+    {
+      "label": "Legit \u00b7 contract call (6 logs)",
+      "expected": "SAFE",
+      "probability": 0.473951,
+      "data": {
+        "from": "0x3a5c819973eb3f40ee88031cb888a8d5ac792d8c",
+        "to": "0x0000000000000000000000000000000000000001",
+        "amount": "0",
+        "gasPrice": "31",
+        "gasLimit": "133079",
+        "blockNumber": "3958007",
+        "hash": "0x65ab4c36fd7589df58c55477f045dfdbc32771c6f40244884a12560a380479b8",
+        "logCount": "6"
+      }
+    },
+    {
+      "label": "Legit \u00b7 1.85738 ETH transfer",
+      "expected": "SAFE",
+      "probability": 0.425956,
+      "data": {
+        "from": "0x1d429fb5a9287c2ede85fb71ea037312b5805a1d",
+        "to": "0x0000000000000000000000000000000000000001",
+        "amount": "1.85738",
+        "gasPrice": "20",
+        "gasLimit": "30001",
+        "blockNumber": "3902820",
+        "hash": "0x58ce1543d002dbd5529ecc90cf267ed4cbb239148028e1676656e9c824a735d0",
+        "logCount": "0"
+      }
+    },
+    {
+      "label": "Legit \u00b7 contract call (9 logs)",
+      "expected": "SAFE",
+      "probability": 0.123094,
+      "data": {
+        "from": "0x00062d1dd1afb6fb02540ddad9cdebfe568e0d89",
+        "to": "0x0000000000000000000000000000000000000001",
+        "amount": "0.02",
+        "gasPrice": "3",
+        "gasLimit": "762070",
+        "blockNumber": "3745601",
+        "hash": "0xb9f1c1789b3dfd2442fd35c549474237499f648b971e8086df60b2204c81aa8d",
+        "logCount": "9"
+      }
+    }
+  ]
+}

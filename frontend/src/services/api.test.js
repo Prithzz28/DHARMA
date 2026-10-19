@@ -146,3 +146,26 @@ describe('validateScanForm', () => {
     expect(errors.gasLimit).toBeTruthy();
   });
 });
+
+describe('scanner presets', async () => {
+  const { default: presets } = await import('../data/scannerPresets.json');
+
+  it('cover both dataset labels', () => {
+    expect(new Set(presets.presets.map((p) => p.expected))).toEqual(new Set(['BLOCKED', 'SAFE']));
+  });
+
+  it.each(presets.presets.map((p) => [p.label, p]))('%s passes form validation and maps to /scan', (_label, preset) => {
+    expect(validateScanForm(preset.data)).toEqual({});
+    // Must equal the request backend/tests/test_scanner_presets.py sends.
+    expect(toScanRequest(preset.data)).toEqual({
+      from: preset.data.from,
+      to: preset.data.to,
+      value_eth: Number(preset.data.amount),
+      gas_price_gwei: Number(preset.data.gasPrice),
+      gas_limit: Number(preset.data.gasLimit),
+      block_number: Number(preset.data.blockNumber),
+      log_count: Number(preset.data.logCount),
+      tx_hash: preset.data.hash,
+    });
+  });
+});

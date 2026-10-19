@@ -239,6 +239,11 @@ cd backend
 PYTHONPATH=. python scripts/evaluate_model.py --csv-dir /path/to/CSVs --n 2000 \
   --json-out ../frontend/src/data/modelEvaluation.json
 ```
+Regenerate the scanner examples the same way after model or threshold changes:
+```bash
+PYTHONPATH=. python scripts/build_scanner_presets.py --csv-dir /path/to/CSVs \
+  --out ../frontend/src/data/scannerPresets.json
+```
 `--json-out` regenerates the figures the dashboard shows (Hero, How It Works, Features, Analytics read them via `frontend/src/data/modelMetrics.js`); re-run it after changing the model or `FRAUD_THRESHOLD`. The Analytics counters (transactions scanned, blocked, latency) are live values from `GET /stats`.
 
 A Random Forest (7 features) used to run alongside DeFiGuard. Measured on the same data it performed at chance level (precision 0.47, recall 0.40, FPR 0.46 at 0.65), and no way of combining it with DeFiGuard improved on DeFiGuard alone at comparable recall (e.g. a weighted blend reached precision 0.90 but recall only 0.39), so it was removed.
@@ -248,7 +253,7 @@ A Random Forest (7 features) used to run alongside DeFiGuard. Measured on the sa
 - There is no authentication; do not expose the API publicly without putting it behind an authenticating gateway.
 - DeFiGuard's ego-graph is built from the transaction node only. It was trained on receipt graphs that also contained token-holding nodes from a token database that is not available for pending transactions; with sender/recipient nodes but no token nodes its output collapses to ~0.014 for every input.
 - With 20 of its 45 training features, DeFiGuard has a much higher false-positive rate than in its paper setting (≈3% FPR with all 45 features on the same data).
-- The dashboard's presets are synthetic and their labels are not ground truth: under the default configuration the four "attack" presets are scored SAFE (Phishing Drainer at medium risk) and "Legit Transfer" is BLOCKED — consistent with the false-positive rate above. They illustrate the UI, not detection capability. A transfer shaped like real labelled fraud (9 ETH, 60 Gwei, block 4,228,383) is blocked (see `tests/test_scan.py`).
+- The scanner's examples are real labelled DeFiTransLyzer transactions (sender, hash, value, gas, block and log count from the dataset; the recipient is a placeholder because the dataset has none), built by `backend/scripts/build_scanner_presets.py`. Only rows whose verdict matches their label are used as examples; across all sampled candidates the scanner blocked 99% of real fraud but passed only 64% of real legitimate transactions, and the UI states this. `tests/test_scanner_presets.py` checks every example's verdict against its label.
 - `DeFiGuard` parity with the training repository's reference predictor is enforced by `tests/test_defiguard.py` (`tests/fixtures/defiguard_golden.json`, regenerated with `scripts/generate_defiguard_golden.py`).
 
 ---
