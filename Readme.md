@@ -271,6 +271,7 @@ Configure these in `.env`:
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins — restrict in production |
 | `LOG_LEVEL` | `INFO` | Python logging verbosity |
 | `GROQ_API_KEY` | *(empty)* | Enables LLM-written explanations |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq chat model for explanations. Groq retires models; if the scanner reports the model unavailable, pick a current one from [console.groq.com/docs/models](https://console.groq.com/docs/models) |
 | `LLM_MAX_CALLS_PER_MINUTE` | `20` | Process-wide cap on Groq calls (`0` disables the LLM) |
 
 The `.env` file is read from the repository root (and `backend/.env`) regardless of the working directory; real environment variables override it. Invalid values (e.g. a threshold outside (0, 1)) stop the backend at startup with a clear error. Settings from the removed Random Forest setup (`MODEL_PATH`, `ENSEMBLE_MODE`, `RF_WEIGHT`, `DG_WEIGHT`) are ignored with a startup warning.

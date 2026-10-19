@@ -308,7 +308,7 @@ export default function AIExplanation() {
               {[
                 'Routes through live /predict + /predict/explain API',
                 'DeFiGuard: GATv2 graph encoder + tabular cross-attention fusion',
-                'AI-generated risk explanations via Groq (Llama 3)',
+                'AI-generated risk explanations via Groq (on explicit scans)',
                 'Feature-level breakdown from real model output',
               ].map((point) => (
                 <div key={point} className="flex items-center gap-3">
@@ -600,8 +600,14 @@ export default function AIExplanation() {
                       <Sparkles className="w-4 h-4" />
                       {result.explanation.is_fallback
                         ? 'Rule-Based Explanation'
-                        : 'AI Explanation (Llama 3 via Groq)'}
+                        : 'AI Explanation (Groq)'}
                     </div>
+                    {result.explanation.fallback_reason && (
+                      <div className="flex items-start gap-1.5 text-[11px] text-yellow-300/90">
+                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                        <span>AI explanation unavailable: {result.explanation.fallback_reason}</span>
+                      </div>
+                    )}
                     <div className="text-sm text-gray-300 leading-relaxed font-semibold">
                       {result.explanation.recommendation}
                     </div>

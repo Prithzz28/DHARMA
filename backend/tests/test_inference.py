@@ -86,6 +86,8 @@ class TestHealthEndpoint:
             "model_loaded": True,
             "model_path": "/mock/defi_guard_model.joblib",
             "fraud_threshold": 0.8,
+            "llm_configured": False,
+            "llm_model": "openai/gpt-oss-120b",
         }
 
     def test_health_degraded_when_model_not_loaded(self, unloaded_client: TestClient) -> None:

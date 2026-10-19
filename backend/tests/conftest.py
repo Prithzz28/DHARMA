@@ -23,6 +23,7 @@ def _deterministic_settings(monkeypatch: pytest.MonkeyPatch):
     request rate limit unless a test enables it."""
     monkeypatch.setattr(settings, "fraud_threshold", 0.80)
     monkeypatch.setattr(settings, "groq_api_key", "")
+    monkeypatch.setattr(settings, "groq_model", "openai/gpt-oss-120b")
     monkeypatch.setattr(settings, "llm_max_calls_per_minute", 20)
     monkeypatch.setattr(settings, "rate_limit_per_minute", 0)
     monkeypatch.setattr(explainer, "_groq_transport", None)

@@ -278,6 +278,8 @@ async def health() -> HealthResponse:
         model_loaded=state.defiguard_loaded,
         model_path=state.defiguard_model_path,
         fraud_threshold=settings.fraud_threshold,
+        llm_configured=bool(settings.groq_api_key),
+        llm_model=settings.groq_model,
     )
 
 

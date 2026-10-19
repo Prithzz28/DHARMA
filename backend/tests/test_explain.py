@@ -273,3 +273,75 @@ def test_risk_bands_follow_configured_threshold(monkeypatch):
     monkeypatch.setattr(settings, "fraud_threshold", 0.4)
     assert explainer.risk_level_for(False, 0.39) == "low"
     assert explainer.risk_level_for(False, 0.45) == "medium"  # not blocked, above the floor
+
+
+# ---------------------------------------------------------------------------
+# Fallback reasons — an AI explanation that could not be produced says why
+# ---------------------------------------------------------------------------
+
+def _groq_error(status, message):
+    return httpx.MockTransport(lambda req: httpx.Response(status, json={"error": {"message": message}}))
+
+
+@pytest.mark.asyncio
+async def test_no_key_reports_reason():
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    assert result["is_fallback"] is True
+    assert result["fallback_reason"] == "No GROQ_API_KEY configured."
+
+
+@pytest.mark.asyncio
+async def test_rule_based_by_request_has_no_reason(groq):
+    groq(_json.dumps({"reasons": ["r"], "recommendation": "x"}))
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, use_llm=False)
+    assert result["fallback_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_retired_model_reported_clearly(monkeypatch, caplog):
+    """Regression: Groq retired llama-3.3-70b-versatile; every call 404'd silently."""
+    monkeypatch.setattr(settings, "groq_api_key", "test-key")
+    monkeypatch.setattr(settings, "groq_model", "llama-3.3-70b-versatile")
+    monkeypatch.setattr(explainer, "_groq_transport", _groq_error(
+        404, "The model `llama-3.3-70b-versatile` does not exist or you do not have access to it."))
+    with caplog.at_level("ERROR"):
+        result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    assert result["is_fallback"] is True
+    assert result["fallback_reason"] == "Groq model 'llama-3.3-70b-versatile' is unavailable; set GROQ_MODEL."
+    assert "set GROQ_MODEL" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "transport,reason",
+    [
+        (_groq_error(500, "boom"), "Groq API error (HTTP 500)."),
+        (httpx.MockTransport(lambda req: (_ for _ in ()).throw(httpx.ConnectError("down"))), "Could not reach Groq."),
+        (httpx.MockTransport(lambda req: (_ for _ in ()).throw(httpx.ReadTimeout("slow"))), "Groq did not respond in time."),
+    ],
+    ids=["http-500", "unreachable", "timeout"],
+)
+@pytest.mark.asyncio
+async def test_failure_reasons(monkeypatch, transport, reason):
+    monkeypatch.setattr(settings, "groq_api_key", "test-key")
+    monkeypatch.setattr(explainer, "_groq_transport", transport)
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    assert result["fallback_reason"] == reason
+
+
+@pytest.mark.asyncio
+async def test_configured_model_is_sent(groq, monkeypatch):
+    monkeypatch.setattr(settings, "groq_model", "qwen/qwen3.8-27b")
+    calls = groq(_json.dumps({"reasons": ["r"], "recommendation": "x"}))
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    assert calls[0]["model"] == "qwen/qwen3.8-27b"
+    assert result["fallback_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_prompt_reports_real_log_count(groq):
+    """Regression: the prompt read log_count (always 0) instead of length_log."""
+    calls = groq(_json.dumps({"reasons": ["r"], "recommendation": "x"}))
+    await explain_transaction_risk({**SAFE_FEATURES, "length_log": 3.0, "log_count": 0.0}, False, 0.1)
+    prompt = calls[0]["messages"][1]["content"]
+    assert "Log Events: 3" in prompt
+    assert "Gas Efficiency" not in prompt

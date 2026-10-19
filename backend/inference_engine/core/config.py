@@ -18,6 +18,7 @@ HOST / PORT               Uvicorn bind address.
 LOG_LEVEL                 Python logging level (DEBUG, INFO, WARNING …).
 CORS_ORIGINS              Comma-separated allowed origins ("*" for development).
 GROQ_API_KEY              Optional — enables LLM risk explanations.
+GROQ_MODEL                Groq chat model for explanations (default openai/gpt-oss-120b).
 LLM_MAX_CALLS_PER_MINUTE  Process-wide cap on Groq calls (0 disables the LLM).
 """
 from __future__ import annotations
@@ -71,6 +72,8 @@ class Settings(BaseSettings):
     # Risk explanation (LLM)
     # ------------------------------------------------------------------ #
     groq_api_key: str = ""
+    #: Groq retires models over time; check https://console.groq.com/docs/models.
+    groq_model: str = "openai/gpt-oss-120b"
     llm_max_calls_per_minute: int = Field(default=20, ge=0)
 
     @field_validator("defiguard_model_path")

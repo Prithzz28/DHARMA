@@ -24,6 +24,7 @@ Usage (from backend/):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
@@ -42,9 +43,17 @@ COLUMNS = [
     "address", "hash", "flag", "value", "effective_gas_price", "gas_used",
     "block_number", "length_log", "chain_id", "is_same_address", "length_to",
 ]
-#: Placeholder recipient (the dataset has no recipient column; any 42-char
-#: address that differs from the sender scores identically).
-PLACEHOLDER_TO = "0x" + "0" * 39 + "1"
+
+
+def placeholder_recipient(tx_hash: str) -> str:
+    """Stand-in recipient derived from the tx hash.
+
+    The dataset has no recipient column; any 42-character address that differs
+    from the sender scores identically. A hash-derived address avoids special
+    addresses (e.g. 0x…01 is the ecrecover precompile) that an LLM explanation
+    could misinterpret.
+    """
+    return "0x" + hashlib.sha256(tx_hash.encode()).hexdigest()[:40]
 #: The scanner estimates gas used as 70% of the gas limit for pending txs.
 PENDING_GAS_USED_FRACTION = 0.7
 
@@ -61,7 +70,7 @@ def to_form(row: pd.Series) -> dict:
     sender = str(row["address"])
     return {
         "from": sender,
-        "to": sender if row["is_same_address"] == 1 else PLACEHOLDER_TO,
+        "to": sender if row["is_same_address"] == 1 else placeholder_recipient(str(row["hash"])),
         "amount": f"{row['value'] / 1e18:.6f}".rstrip("0").rstrip("."),
         "gasPrice": f"{row['effective_gas_price'] / 1e9:.3f}".rstrip("0").rstrip("."),
         "gasLimit": str(math.ceil(row["gas_used"] / PENDING_GAS_USED_FRACTION)),

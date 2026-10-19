@@ -37,13 +37,16 @@ from inference_engine.core.rate_limit import RateLimiter
 logger = logging.getLogger(__name__)
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_TIMEOUT_S = 8.0
 MAX_REASONS = 6
 MAX_TEXT_LEN = 500
 
 #: Probability from which a non-blocked transaction is reported as "medium".
 MEDIUM_RISK_FLOOR = 0.5
+
+class LLMUnavailable(Exception):
+    """The LLM explanation could not be produced; ``str(exc)`` says why (shown to users)."""
+
 
 #: Transport override for the Groq HTTP client (tests inject httpx.MockTransport).
 _groq_transport: Optional[httpx.AsyncBaseTransport] = None
@@ -163,15 +166,18 @@ async def _call_groq_explainer(
     risk_level: str,
     raw_from: Optional[str] = None,
     raw_to: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Ask Groq for reasons + recommendation; None on any failure or when disabled."""
+) -> Dict[str, Any]:
+    """Ask Groq for reasons + recommendation.
+
+    Raises ``LLMUnavailable`` with a user-facing reason on any failure.
+    """
     api_key = settings.groq_api_key
     if not api_key:
-        return None
+        raise LLMUnavailable("No GROQ_API_KEY configured.")
     allowed, _ = _llm_budget.hit("groq", settings.llm_max_calls_per_minute)
     if not allowed:
         logger.info("LLM call budget exhausted — using rule-based explanation.")
-        return None
+        raise LLMUnavailable("AI explanation limit reached; try again in a minute.")
 
     value_eth = features.get("value", 0.0) / 1e18
     system_prompt = (
@@ -184,6 +190,9 @@ async def _call_groq_explainer(
         "- Provide 2-4 specific, technical reasons referencing the actual feature values.\n"
         "- The recommendation must be consistent with the verdict "
         "(BLOCKED: do not sign; SAFE: proceeding is reasonable, with normal caution).\n"
+        "- Base every reason ONLY on the values provided. You have no address reputation, "
+        "contract source or price data: never claim an address is known, flagged, a burn address "
+        "or malicious.\n"
         "- Do NOT include full addresses or other PII."
     )
     user_content = (
@@ -196,9 +205,9 @@ async def _call_groq_explainer(
         f"Transfer Amount: {value_eth:.6f} ETH\n"
         f"Effective Gas Price: {features.get('effective_gas_price', 0.0) / 1e9:.1f} Gwei\n"
         f"Gas Used: {features.get('gas_used', 0.0):,.0f} units\n"
-        f"Gas Efficiency (used/limit): {features.get('gas_efficiency', 0.0):.2f}\n"
         f"Self-Transfer (from == to): {features.get('is_same_address', 0.0) > 0.5}\n"
-        f"Log Events: {features.get('log_count', 0.0):.0f}\n"
+        # The event count is in length_log (log_count is constant 0 in the training data).
+        f"Log Events: {features.get('length_log', 0.0):.0f}\n"
     )
 
     try:
@@ -207,7 +216,7 @@ async def _call_groq_explainer(
                 GROQ_URL,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
-                    "model": GROQ_MODEL,
+                    "model": settings.groq_model,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content},
@@ -218,18 +227,38 @@ async def _call_groq_explainer(
                 },
             )
         if resp.status_code != 200:
-            logger.warning("Groq API returned status %d: %s", resp.status_code, resp.text[:200])
-            return None
+            detail = _groq_error_message(resp)
+            if resp.status_code == 404 or (resp.status_code == 400 and "model" in detail.lower()):
+                # Typically a retired model: needs a config change, not a retry.
+                logger.error("Groq rejected model %r (%d): %s — set GROQ_MODEL to an available model.",
+                             settings.groq_model, resp.status_code, detail)
+                raise LLMUnavailable(f"Groq model '{settings.groq_model}' is unavailable; set GROQ_MODEL.")
+            logger.warning("Groq API returned status %d: %s", resp.status_code, detail)
+            raise LLMUnavailable(f"Groq API error (HTTP {resp.status_code}).")
         text = resp.json()["choices"][0]["message"]["content"].strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         validated = _validate_llm_payload(json.loads(text))
-        if validated is None:
-            logger.warning("Groq response did not match the expected schema — using fallback.")
-        return validated
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError) as exc:
-        logger.warning("Groq explanation failed (%s: %s) — using fallback.", type(exc).__name__, exc)
-        return None
+    except httpx.TimeoutException as exc:
+        logger.warning("Groq request timed out: %s", exc)
+        raise LLMUnavailable("Groq did not respond in time.") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("Groq request failed (%s: %s)", type(exc).__name__, exc)
+        raise LLMUnavailable("Could not reach Groq.") from exc
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError) as exc:
+        logger.warning("Groq returned an unreadable response (%s: %s)", type(exc).__name__, exc)
+        raise LLMUnavailable("Groq returned an unreadable response.") from exc
+    if validated is None:
+        logger.warning("Groq response did not match the expected schema — using fallback.")
+        raise LLMUnavailable("Groq returned an incomplete explanation.")
+    return validated
+
+
+def _groq_error_message(resp: httpx.Response) -> str:
+    try:
+        return str(resp.json()["error"]["message"])[:300]
+    except (ValueError, KeyError, TypeError):
+        return resp.text[:300]
 
 
 async def explain_transaction_risk(
@@ -248,16 +277,23 @@ async def explain_transaction_risk(
     t0 = time.perf_counter()
     risk_level = risk_level_for(is_fraud, fraud_probability)
 
+    fallback_reason: Optional[str] = None
     if use_llm:
-        llm = await _call_groq_explainer(features, is_fraud, fraud_probability, risk_level, raw_from, raw_to)
-        if llm is not None:
+        try:
+            llm = await _call_groq_explainer(features, is_fraud, fraud_probability, risk_level, raw_from, raw_to)
+        except LLMUnavailable as exc:
+            fallback_reason = str(exc)
+        else:
             return {
                 "risk_level": risk_level,
                 **llm,
                 "is_fallback": False,
+                "fallback_reason": None,
                 "exec_time_ms": round((time.perf_counter() - t0) * 1000, 2),
             }
 
     result = _build_rule_fallback_explanation(features, is_fraud, fraud_probability, raw_from, raw_to)
+    # Only set when an AI explanation was requested but could not be produced.
+    result["fallback_reason"] = fallback_reason
     result["exec_time_ms"] = round((time.perf_counter() - t0) * 1000, 2)
     return result
