@@ -1,78 +1,49 @@
 import { useRef, useState, useEffect } from 'react';
 import { motion, useInView } from 'framer-motion';
-import { BarChart2, TrendingUp, TrendingDown, Activity } from 'lucide-react';
+import { BarChart2, TrendingUp, ShieldAlert, Activity, Timer } from 'lucide-react';
 import {
-  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, ReferenceLine, Legend,
+  ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid,
 } from 'recharts';
+import { fetchStats } from '../services/api';
+import { modelMetrics, evaluationSource, pct } from '../data/modelMetrics';
 
-const areaData = [
-  { day: 'Mon', safe: 420, fraud: 28, total: 448 },
-  { day: 'Tue', safe: 380, fraud: 45, total: 425 },
-  { day: 'Wed', safe: 510, fraud: 22, total: 532 },
-  { day: 'Thu', safe: 470, fraud: 38, total: 508 },
-  { day: 'Fri', safe: 620, fraud: 15, total: 635 },
-  { day: 'Sat', safe: 550, fraud: 31, total: 581 },
-  { day: 'Sun', safe: 480, fraud: 19, total: 499 },
+// ─── Chart data, all derived from the measured evaluation ─────────────────────
+const thresholdData = modelMetrics.thresholdCurve.map((m) => ({
+  threshold: m.threshold.toFixed(2),
+  Precision: +(m.precision * 100).toFixed(1),
+  Recall: +(m.recall * 100).toFixed(1),
+  'False-positive rate': +(m.fpr * 100).toFixed(1),
+}));
+
+const histogramData = modelMetrics.scoreHistogram.map((b) => ({
+  range: b.range,
+  Fraud: b.fraud,
+  Legitimate: b.legit,
+}));
+
+const outcomeData = [
+  { name: 'Fraud blocked', value: modelMetrics.outcomes.fraud_caught, color: '#22C55E' },
+  { name: 'Fraud missed', value: modelMetrics.outcomes.fraud_missed, color: '#EF4444' },
+  { name: 'Legit blocked', value: modelMetrics.outcomes.legit_flagged, color: '#F59E0B' },
+  { name: 'Legit passed', value: modelMetrics.outcomes.legit_passed, color: '#06B6D4' },
 ];
 
-const riskData = [
-  { range: '0-20%', count: 980 },
-  { range: '20-40%', count: 340 },
-  { range: '40-60%', count: 180 },
-  { range: '60-80%', count: 95 },
-  { range: '80-100%', count: 38 },
+const datasetData = [
+  { name: 'Legitimate', rows: modelMetrics.datasetRows.legit },
+  { name: 'Fraud', rows: modelMetrics.datasetRows.fraud },
 ];
 
-const pieData = [
-  { name: 'Safe', value: 1847, color: '#22C55E' },
-  { name: 'Medium Risk', value: 312, color: '#F59E0B' },
-  { name: 'High Risk', value: 38, color: '#EF4444' },
-];
+const STATS_POLL_MS = 15_000;
 
-const gasData = [
-  { hour: '00h', avg: 45 },
-  { hour: '03h', avg: 32 },
-  { hour: '06h', avg: 28 },
-  { hour: '09h', avg: 65 },
-  { hour: '12h', avg: 120 },
-  { hour: '15h', avg: 95 },
-  { hour: '18h', avg: 150 },
-  { hour: '21h', avg: 85 },
-];
-
-function AnimatedCounter({ target, prefix = '', suffix = '' }) {
-  const [count, setCount] = useState(0);
-  const ref = useRef(null);
-  const inView = useInView(ref, { once: true });
-
-  useEffect(() => {
-    if (!inView) return;
-    const duration = 2000;
-    const steps = 60;
-    const increment = target / steps;
-    let current = 0;
-    const timer = setInterval(() => {
-      current = Math.min(current + increment, target);
-      setCount(Math.floor(current));
-      if (current >= target) clearInterval(timer);
-    }, duration / steps);
-    return () => clearInterval(timer);
-  }, [inView, target]);
-
-  return (
-    <span ref={ref}>{prefix}{count.toLocaleString()}{suffix}</span>
-  );
-}
-
-const CustomTooltip = ({ active, payload, label }) => {
+const CustomTooltip = ({ active, payload, label, unit = '' }) => {
   if (active && payload && payload.length) {
     return (
       <div className="glass-card border border-white/10 rounded-xl px-4 py-3">
         <p className="text-xs text-gray-400 mb-2">{label}</p>
         {payload.map((entry) => (
-          <p key={entry.name} className="text-sm font-bold" style={{ color: entry.color }}>
-            {entry.name}: {entry.value}
+          <p key={entry.name} className="text-sm font-bold" style={{ color: entry.color || entry.payload?.color }}>
+            {entry.name}: {Number(entry.value).toLocaleString()}{unit}
           </p>
         ))}
       </div>
@@ -81,15 +52,56 @@ const CustomTooltip = ({ active, payload, label }) => {
   return null;
 };
 
+function ChartCard({ title, subtitle, delay, inView, children }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 30 }}
+      animate={inView ? { opacity: 1, y: 0 } : {}}
+      transition={{ delay }}
+      className="glass-card rounded-2xl p-6 border border-white/5"
+    >
+      <h3 className="font-bold text-white mb-1 font-[Manrope]">{title}</h3>
+      <p className="text-xs text-gray-500 mb-6">{subtitle}</p>
+      {children}
+    </motion.div>
+  );
+}
+
+/** Live counters from GET /stats; null while the engine is unreachable. */
+function useLiveStats() {
+  const [stats, setStats] = useState(null);
+  useEffect(() => {
+    let controller;
+    const load = async () => {
+      controller?.abort();
+      controller = new AbortController();
+      try {
+        setStats(await fetchStats({ signal: controller.signal }));
+      } catch (err) {
+        if (err?.name !== 'AbortError') setStats(null);
+      }
+    };
+    load();
+    const timer = setInterval(load, STATS_POLL_MS);
+    return () => {
+      clearInterval(timer);
+      controller?.abort();
+    };
+  }, []);
+  return stats;
+}
+
 export default function Analytics() {
   const ref = useRef(null);
   const inView = useInView(ref, { once: true });
+  const stats = useLiveStats();
 
+  const live = (value) => (stats ? value : '—');
   const metrics = [
-    { label: 'Transactions Scanned', value: 2197433, prefix: '', suffix: '+', icon: Activity, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
-    { label: 'Fraud Blocked', value: 38291, prefix: '', suffix: '', icon: TrendingDown, color: 'text-red-400', bg: 'bg-red-500/10' },
-    { label: 'Ensemble Recall', value: 100, prefix: '', suffix: '%', icon: TrendingUp, color: 'text-green-400', bg: 'bg-green-500/10' },
-    { label: 'Avg Inference Time', value: 73, prefix: '', suffix: 'ms', icon: BarChart2, color: 'text-orange-400', bg: 'bg-orange-500/10' },
+    { label: 'Transactions Scanned', value: live(stats?.total_predictions.toLocaleString()), icon: Activity, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
+    { label: 'Blocked as Fraud', value: live(stats?.total_fraud.toLocaleString()), icon: ShieldAlert, color: 'text-red-400', bg: 'bg-red-500/10' },
+    { label: 'Block Rate', value: live(`${stats?.fraud_rate_pct.toFixed(1)}%`), icon: TrendingUp, color: 'text-green-400', bg: 'bg-green-500/10' },
+    { label: 'Avg Inference Time', value: live(`${stats?.avg_latency_ms.toFixed(1)} ms`), icon: Timer, color: 'text-orange-400', bg: 'bg-orange-500/10' },
   ];
 
   return (
@@ -122,11 +134,19 @@ export default function Analytics() {
             transition={{ delay: 0.2 }}
             className="text-gray-400 text-lg max-w-2xl mx-auto mb-3"
           >
-            Comprehensive analytics to understand the threat landscape and your security posture.
+            Live activity from this inference engine, and how the model performs on real labelled transactions.
           </motion.p>
         </div>
 
-        {/* Metric Cards */}
+        {/* Live counters (GET /stats) */}
+        <div className="flex items-center justify-between mb-3 text-xs text-gray-500">
+          <span className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${stats ? 'bg-green-400 animate-pulse' : 'bg-gray-600'}`} />
+            {stats
+              ? `Live from this engine · up ${Math.floor(stats.uptime_seconds / 60)} min`
+              : 'Inference engine unreachable — live counters unavailable'}
+          </span>
+        </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           {metrics.map((metric, idx) => {
             const Icon = metric.icon;
@@ -142,110 +162,74 @@ export default function Analytics() {
                 <div className={`w-10 h-10 rounded-xl ${metric.bg} flex items-center justify-center mb-4`}>
                   <Icon className={`w-5 h-5 ${metric.color}`} />
                 </div>
-                <div className={`text-3xl font-black ${metric.color} font-[Manrope] mb-1`}>
-                  <AnimatedCounter
-                    target={metric.value}
-                    prefix={metric.prefix}
-                    suffix={metric.suffix}
-                  />
-                </div>
+                <div className={`text-3xl font-black ${metric.color} font-[Manrope] mb-1`}>{metric.value}</div>
                 <div className="text-sm text-gray-500">{metric.label}</div>
               </motion.div>
             );
           })}
         </div>
 
-        {/* Charts Grid */}
+        {/* Charts Grid — measured evaluation */}
         <div className="grid lg:grid-cols-2 gap-6">
-          {/* Fraud vs Safe Area Chart */}
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={inView ? { opacity: 1, y: 0 } : {}}
-            transition={{ delay: 0.5 }}
-            className="glass-card rounded-2xl p-6 border border-white/5"
+          <ChartCard
+            title="Precision, Recall & False Positives"
+            subtitle="By block threshold — dashed line marks the configured threshold"
+            delay={0.5}
+            inView={inView}
           >
-            <h3 className="font-bold text-white mb-1 font-[Manrope]">Fraud vs Safe (7 Days)</h3>
-            <p className="text-xs text-gray-500 mb-6">Weekly transaction comparison</p>
             <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={areaData}>
-                <defs>
-                  <linearGradient id="safeGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#22C55E" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#22C55E" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="fraudGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#EF4444" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#EF4444" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
+              <LineChart data={thresholdData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-                <XAxis dataKey="day" tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false} />
-                <Tooltip content={<CustomTooltip />} />
-                <Area type="monotone" dataKey="safe" stroke="#22C55E" strokeWidth={2} fill="url(#safeGrad)" name="Safe" />
-                <Area type="monotone" dataKey="fraud" stroke="#EF4444" strokeWidth={2} fill="url(#fraudGrad)" name="Fraud" />
-              </AreaChart>
+                <XAxis dataKey="threshold" tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false} />
+                <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false} />
+                <Tooltip content={<CustomTooltip unit="%" />} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <ReferenceLine x={modelMetrics.threshold.toFixed(2)} stroke="#9CA3AF" strokeDasharray="4 4" />
+                <Line type="monotone" dataKey="Precision" stroke="#22C55E" strokeWidth={2} dot />
+                <Line type="monotone" dataKey="Recall" stroke="#8B5CF6" strokeWidth={2} dot />
+                <Line type="monotone" dataKey="False-positive rate" stroke="#EF4444" strokeWidth={2} dot />
+              </LineChart>
             </ResponsiveContainer>
-          </motion.div>
+          </ChartCard>
 
-          {/* Risk Distribution Bar Chart */}
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={inView ? { opacity: 1, y: 0 } : {}}
-            transition={{ delay: 0.6 }}
-            className="glass-card rounded-2xl p-6 border border-white/5"
+          <ChartCard
+            title="Fraud Score Distribution"
+            subtitle="Evaluation transactions per DeFiGuard score range, by true label"
+            delay={0.6}
+            inView={inView}
           >
-            <h3 className="font-bold text-white mb-1 font-[Manrope]">Risk Distribution</h3>
-            <p className="text-xs text-gray-500 mb-6">Transactions by risk score range</p>
             <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={riskData}>
+              <BarChart data={histogramData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-                <XAxis dataKey="range" tick={{ fontSize: 10, fill: '#6B7280' }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="range" tick={{ fontSize: 9, fill: '#6B7280' }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false} />
                 <Tooltip content={<CustomTooltip />} />
-                <Bar dataKey="count" name="Transactions" radius={[6, 6, 0, 0]}>
-                  {riskData.map((entry, index) => (
-                    <Cell
-                      key={index}
-                      fill={index < 2 ? '#22C55E' : index === 2 ? '#F59E0B' : '#EF4444'}
-                      fillOpacity={0.8}
-                    />
-                  ))}
-                </Bar>
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="Legitimate" stackId="label" fill="#06B6D4" fillOpacity={0.8} />
+                <Bar dataKey="Fraud" stackId="label" fill="#EF4444" fillOpacity={0.8} radius={[6, 6, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
-          </motion.div>
+          </ChartCard>
 
-          {/* Pie Chart */}
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={inView ? { opacity: 1, y: 0 } : {}}
-            transition={{ delay: 0.7 }}
-            className="glass-card rounded-2xl p-6 border border-white/5"
+          <ChartCard
+            title="Outcomes at the Block Threshold"
+            subtitle={`${modelMetrics.sampleSize.toLocaleString()} evaluation transactions at threshold ${modelMetrics.threshold.toFixed(2)}`}
+            delay={0.7}
+            inView={inView}
           >
-            <h3 className="font-bold text-white mb-1 font-[Manrope]">Transaction Breakdown</h3>
-            <p className="text-xs text-gray-500 mb-6">Overall security classification</p>
             <div className="flex items-center justify-between">
               <ResponsiveContainer width="60%" height={200}>
                 <PieChart>
-                  <Pie
-                    data={pieData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={55}
-                    outerRadius={85}
-                    strokeWidth={0}
-                    dataKey="value"
-                  >
-                    {pieData.map((entry, index) => (
-                      <Cell key={index} fill={entry.color} fillOpacity={0.85} />
+                  <Pie data={outcomeData} cx="50%" cy="50%" innerRadius={55} outerRadius={85} strokeWidth={0} dataKey="value">
+                    {outcomeData.map((entry) => (
+                      <Cell key={entry.name} fill={entry.color} fillOpacity={0.85} />
                     ))}
                   </Pie>
                   <Tooltip content={<CustomTooltip />} />
                 </PieChart>
               </ResponsiveContainer>
               <div className="flex flex-col gap-3">
-                {pieData.map((item) => (
+                {outcomeData.map((item) => (
                   <div key={item.name} className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
                     <div>
@@ -256,36 +240,32 @@ export default function Analytics() {
                 ))}
               </div>
             </div>
-          </motion.div>
+          </ChartCard>
 
-          {/* Gas Usage Chart */}
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={inView ? { opacity: 1, y: 0 } : {}}
-            transition={{ delay: 0.8 }}
-            className="glass-card rounded-2xl p-6 border border-white/5"
+          <ChartCard
+            title="Training Dataset Composition"
+            subtitle="Labelled transactions in the DeFiTransLyzer dataset"
+            delay={0.8}
+            inView={inView}
           >
-            <h3 className="font-bold text-white mb-1 font-[Manrope]">Gas Usage Trend</h3>
-            <p className="text-xs text-gray-500 mb-6">Average gas price (Gwei) by hour</p>
             <ResponsiveContainer width="100%" height={200}>
-              <AreaChart data={gasData}>
-                <defs>
-                  <linearGradient id="gasGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#F59E0B" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
+              <BarChart data={datasetData} layout="vertical" margin={{ left: 20 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-                <XAxis dataKey="hour" tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false} />
+                <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false}
+                  tickFormatter={(v) => `${(v / 1000).toLocaleString()}k`} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#6B7280' }} axisLine={false} tickLine={false} />
                 <Tooltip content={<CustomTooltip />} />
-                <Area type="monotone" dataKey="avg" stroke="#F59E0B" strokeWidth={2} fill="url(#gasGrad)" name="Gas (Gwei)" />
-              </AreaChart>
+                <Bar dataKey="rows" name="Transactions" radius={[0, 6, 6, 0]}>
+                  {datasetData.map((entry) => (
+                    <Cell key={entry.name} fill={entry.name === 'Fraud' ? '#EF4444' : '#22C55E'} fillOpacity={0.8} />
+                  ))}
+                </Bar>
+              </BarChart>
             </ResponsiveContainer>
-          </motion.div>
+          </ChartCard>
         </div>
 
-        {/* Live Model Verification & Benchmark Table */}
+        {/* Measured benchmark */}
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={inView ? { opacity: 1, y: 0 } : {}}
@@ -295,40 +275,38 @@ export default function Analytics() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
             <div>
               <div className="flex items-center gap-2 mb-1">
-                <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse" />
-                <h3 className="text-lg font-bold text-white font-[Manrope]">Dual-Model Engine Benchmark Metrics</h3>
+                <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
+                <h3 className="text-lg font-bold text-white font-[Manrope]">DeFiGuard Engine Benchmark Metrics</h3>
               </div>
-              <p className="text-xs text-gray-400">
-                Empirical validation across Random Forest (200 estimators) and DeFiGuard GNN on Web3 attack scenarios
-              </p>
+              <p className="text-xs text-gray-400">{evaluationSource}</p>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs font-mono px-3 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
-                Threshold: 0.65 · Latency &lt; 80ms
+                Threshold: {modelMetrics.threshold.toFixed(2)}
               </span>
             </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div className="p-4 rounded-xl bg-white/5 border border-white/5">
-              <div className="text-xs text-gray-400 mb-1">Ensemble Accuracy</div>
-              <div className="text-2xl font-black text-cyan-400 font-mono">100.0%</div>
-              <div className="text-[10px] text-gray-500 mt-1">Verified on 12 test vectors</div>
+              <div className="text-xs text-gray-400 mb-1">Accuracy</div>
+              <div className="text-2xl font-black text-cyan-400 font-mono">{pct(modelMetrics.accuracy)}</div>
+              <div className="text-[10px] text-gray-500 mt-1">Balanced evaluation sample</div>
             </div>
             <div className="p-4 rounded-xl bg-white/5 border border-white/5">
-              <div className="text-xs text-gray-400 mb-1">Precision (FPR: 0%)</div>
-              <div className="text-2xl font-black text-emerald-400 font-mono">100.0%</div>
-              <div className="text-[10px] text-gray-500 mt-1">Zero false alarms on legit txns</div>
+              <div className="text-xs text-gray-400 mb-1">Precision</div>
+              <div className="text-2xl font-black text-emerald-400 font-mono">{pct(modelMetrics.precision)}</div>
+              <div className="text-[10px] text-gray-500 mt-1">FPR {pct(modelMetrics.fpr)} of legitimate txns blocked</div>
             </div>
             <div className="p-4 rounded-xl bg-white/5 border border-white/5">
-              <div className="text-xs text-gray-400 mb-1">Recall (FNR: 0%)</div>
-              <div className="text-2xl font-black text-purple-400 font-mono">100.0%</div>
-              <div className="text-[10px] text-gray-500 mt-1">Zero missed zero-day attacks</div>
+              <div className="text-xs text-gray-400 mb-1">Recall</div>
+              <div className="text-2xl font-black text-purple-400 font-mono">{pct(modelMetrics.recall)}</div>
+              <div className="text-[10px] text-gray-500 mt-1">{pct(1 - modelMetrics.recall)} of fraud missed</div>
             </div>
             <div className="p-4 rounded-xl bg-white/5 border border-white/5">
               <div className="text-xs text-gray-400 mb-1">Median Latency (p50)</div>
-              <div className="text-2xl font-black text-amber-400 font-mono">73.2 ms</div>
-              <div className="text-[10px] text-gray-500 mt-1">ThreadPool concurrent eval</div>
+              <div className="text-2xl font-black text-amber-400 font-mono">{modelMetrics.latencyMedianMs.toFixed(1)} ms</div>
+              <div className="text-[10px] text-gray-500 mt-1">Per transaction on CPU · p95 {modelMetrics.latencyP95Ms.toFixed(1)} ms</div>
             </div>
           </div>
         </motion.div>

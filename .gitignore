@@ -7,7 +7,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-package-lock.json
 
 # Environment & Config (all nested .env files)
 **/.env
@@ -38,6 +37,8 @@ ENV/
 *.tflite
 *.pb
 backend/models/*.joblib
+# The DeFiGuard model (1.5 MB) is versioned so fresh clones can run the engine.
+!backend/models/defi_guard_model.joblib
 
 # Datasets (large files)
 backend/data/

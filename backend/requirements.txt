@@ -1,22 +1,19 @@
-# Runtime dependencies for Web3 Transaction Firewall backend
-# Install with: pip install -r requirements.txt
+# Runtime dependencies for the Web3 Transaction Firewall backend
+# Install with: pip install -r requirements.txt   (tests: requirements-dev.txt)
 
 # ── Inference Engine ─────────────────────────────────────────────────────────
 fastapi>=0.110
 uvicorn[standard]>=0.29
+pydantic>=2.6
 pydantic-settings>=2.0
+python-dotenv>=1.0
 
 # ── ML / Inference ───────────────────────────────────────────────────────────
-scikit-learn>=1.3
+# torch_geometric pinned to the version defi_guard_model.joblib was exported with.
+torch>=2.1                    # DeFiGuard neural network
+torch_geometric==2.8.0.post1  # DeFiGuard GATv2 graph encoder (pure Python)
 joblib>=1.3
 numpy>=1.24
-pandas>=2.0          # Used to suppress sklearn feature-name warnings in ensemble
-torch>=2.0           # PyTorch runtime for DeFiGuard neural network and GNN shims
 
-# ── Network / HTTP Client ────────────────────────────────────────────────────
-aiohttp>=3.9
+# ── HTTP client (Groq LLM explanations) ──────────────────────────────────────
 httpx>=0.27
-
-# ── Testing ──────────────────────────────────────────────────────────────────
-pytest>=8.0
-pytest-asyncio>=0.23

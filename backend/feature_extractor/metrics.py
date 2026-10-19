@@ -2,20 +2,22 @@
 """
 feature_extractor/metrics.py
 ==============================
-Pure-math helper functions for deriving the DeFiTransLyzer features from raw
-Ethereum transaction fields.
+Pure-math helpers deriving DeFiTransLyzer features from raw Ethereum
+transaction fields.
 
-All functions are stateless, have no external dependencies beyond the standard
-library and numpy, and are optimised for single-call latency (no vectorised
-batch paths — those belong in the training pipeline).
+The definitions follow the **DeFiTransLyzer dataset the models were trained
+on**, as measured from its CSVs and from the StandardScaler statistics stored in
+``defi_guard_model.joblib`` — not the textbook names of the columns. Where the
+two differ it is noted below; feeding the textbook definition puts inputs far
+outside the training distribution (e.g. a gas_price_ratio of 2 is ~200 standard
+deviations from the training mean).
 
-Naming follows the paper's feature glossary and ``data_loader.TRANSACTION_FEATURES``
-exactly so that returned keys map 1-to-1 to the Pydantic schema without
-any renaming step.
+Features that are constant 0 throughout the training data (``log_count``,
+``gas_per_log_event``, ``normalized_token_transfer``) are emitted as 0.0 by
+``extractor.py`` and have no helper here.
 """
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 
@@ -24,48 +26,35 @@ from typing import Optional
 # --------------------------------------------------------------------------- #
 
 def calc_total_gas_cost(gas_used: float, effective_gas_price: float) -> float:
-    """Total cost of the transaction in wei.
-
-    total_gas_cost = gas_used × effective_gas_price
-    """
+    """Total cost of the transaction in wei: gas_used × effective_gas_price."""
     return gas_used * effective_gas_price
 
 
-def calc_gas_efficiency(gas_used: float, gas_limit: float) -> float:
-    """Ratio of gas consumed to gas limit.
+def calc_gas_efficiency(cumulative_gas_used: float, gas_used: float) -> float:
+    """Dataset definition: cumulative block gas up to this tx ÷ this tx's gas.
 
-    A ratio close to 1.0 suggests the sender tightly estimated gas
-    (common in scripted/bot transactions).
+    (Training mean ≈ 92; 0 whenever cumulative gas is unknown/0, which is the
+    case for pending transactions.)
     """
-    if gas_limit <= 0:
+    if gas_used <= 0:
         return 0.0
-    return gas_used / gas_limit
+    return cumulative_gas_used / gas_used
 
 
 def calc_gas_price_ratio(
-    effective_gas_price: float,
-    base_fee_per_gas: Optional[float],
+    effective_gas_price: Optional[float],
+    gas_price_cap: Optional[float],
 ) -> float:
-    """Ratio of the effective gas price to the block base fee.
+    """Ratio of the effective (paid) gas price to the price the sender offered.
 
-    Transactions paying many multiples of the base fee are suspicious
-    (front-running / sandwich attack pattern).
-    Returns 1.0 when base_fee_per_gas is unavailable (pre-EIP-1559 blocks).
+    In the training data this is 1.0 for virtually every transaction (mean
+    0.99998, range [0, 1]), consistent with effective ÷ offered price. Returns
+    1.0 when either value is unknown — e.g. for pending transactions, which have
+    no effective price yet.
     """
-    if base_fee_per_gas is None or base_fee_per_gas <= 0:
+    if not effective_gas_price or not gas_price_cap or gas_price_cap <= 0:
         return 1.0
-    return effective_gas_price / base_fee_per_gas
-
-
-def calc_gas_per_log_event(gas_used: float, log_count: int) -> float:
-    """Average gas spent per log event.
-
-    gas_per_log_event = gas_used / (log_count + 1)
-
-    Adding 1 avoids division-by-zero for transactions with no logs while
-    keeping the metric meaningful (a transaction with 0 logs returns gas_used).
-    """
-    return gas_used / (log_count + 1)
+    return effective_gas_price / gas_price_cap
 
 
 # --------------------------------------------------------------------------- #
@@ -73,24 +62,21 @@ def calc_gas_per_log_event(gas_used: float, log_count: int) -> float:
 # --------------------------------------------------------------------------- #
 
 def calc_length_log(log_count: int) -> float:
-    """Natural logarithm of the number of log events (+ 1 for log(0) safety).
-
-    length_log ≈ estimated event generation complexity.
-    """
-    return math.log(log_count + 1)
+    """Dataset definition: the number of log entries (integer count, max 43 in training)."""
+    return float(log_count)
 
 
 def calc_event_activity_flag(log_count: int) -> float:
-    """Binary flag: 1.0 if the transaction emitted ≥ 1 log event."""
+    """1.0 if the transaction emitted ≥ 1 log event.
+
+    Approximation: in the training data this agrees with "has logs" for ~82% of
+    rows; the dataset's exact definition is not recoverable from its columns.
+    """
     return 1.0 if log_count > 0 else 0.0
 
 
 def calc_log_removed(logs: list) -> float:
-    """1.0 if *any* log entry in the receipt has ``removed == True``.
-
-    A removed log signals a blockchain reorganisation, which is correlated
-    with certain attack patterns.
-    """
+    """1.0 if *any* log entry in the receipt has ``removed == True`` (chain reorg)."""
     return 1.0 if any(log.get("removed", False) for log in logs) else 0.0
 
 
@@ -106,33 +92,10 @@ def calc_is_same_address(from_addr: str, to_addr: Optional[str]) -> float:
 
 
 def addr_length(address: Optional[str]) -> float:
-    """Byte-length of an Ethereum address string (including '0x' prefix).
-
-    Standard addresses are 42 characters; contracts and EOAs are
-    indistinguishable by length alone, but *anomalous* lengths are a
-    fraud signal.
-    """
+    """Character length of an address string (42 for a standard 0x address)."""
     return float(len(address)) if address else 0.0
 
 
 def hash_length(tx_hash: Optional[str]) -> float:
-    """Byte-length of the transaction hash string (including '0x' prefix).
-
-    Standard hashes are 66 characters.
-    """
+    """Character length of the transaction hash string (66 for a standard hash)."""
     return float(len(tx_hash)) if tx_hash else 0.0
-
-
-# --------------------------------------------------------------------------- #
-# Value metrics
-# --------------------------------------------------------------------------- #
-
-def calc_normalized_token_transfer(value: float, max_value: float = 1e21) -> float:
-    """Normalize the raw ETH value (wei) to [0, 1] against a reference maximum.
-
-    The reference maximum defaults to 1000 ETH in wei, which captures the
-    vast majority of DeFi transaction values without saturation.
-    """
-    if max_value <= 0:
-        return 0.0
-    return min(value / max_value, 1.0)

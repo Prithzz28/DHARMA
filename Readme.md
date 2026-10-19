@@ -1,15 +1,16 @@
 # Web3 Transaction Firewall 🛡️
 
-Real-time Ethereum transaction firewall. Evaluates transactions before execution, extracts a 20-dimensional feature vector using DeFiTransLyzer heuristics, scores fraud risk via a dual-model machine learning ensemble (Random Forest classifier + DeFiGuard neural network), and identifies malicious transactions before they compromise wallet funds.
+Real-time Ethereum transaction firewall. Evaluates transactions before execution, extracts a 20-dimensional DeFiTransLyzer feature vector, scores fraud risk with the DeFiGuard graph neural network, and flags malicious transactions before they are signed.
 
 ---
 
 ## 🌟 Key Features
 
-- **Dual-Model ML Ensemble:** Combines an optimized 200-tree Random Forest classifier with the DeFiGuard GNN + tabular fusion neural network for maximum recall and precision.
-- **Sub-Millisecond Inference:** Fast scoring API (`:8001`) with in-memory model evaluation (< 2 ms median latency).
-- **20-Feature DeFiTransLyzer Vector:** Dynamic extraction of structural, gas dynamics, block context, value transfer, and log event metrics.
-- **Fail-Closed Security:** Configurable fraud threshold (default `0.65`) with automatic blocking of phishing drainers, honeypots, and reentrancy exploits.
+- **DeFiGuard Model:** GATv2 graph encoder + tabular encoder with cross-attention fusion, run with the exact forward pass it was trained with. The block threshold was chosen by measuring it on real labelled transactions — see [Model evaluation](#-model-evaluation).
+- **Rate Limited:** Scoring endpoints are limited per client IP (`RATE_LIMIT_PER_MINUTE`, default 60) and answer `429` with `Retry-After` when exceeded.
+- **Fast Inference:** In-memory scoring API (`:8001`); well under 100 ms per scan on CPU.
+- **Server-side Feature Extraction:** `POST /scan` turns user-level transaction parameters into the 20-feature DeFiTransLyzer vector on the server, using the same definitions as the training data.
+- **Configurable Blocking:** Transactions whose fraud probability exceeds `FRAUD_THRESHOLD` (default `0.80`) are reported as BLOCKED.
 - **Explainable Security (XAI):** Plain-language breakdown of risk factors (e.g., self-transfers, abnormal gas-to-base-fee ratios, drainer patterns) for wallet users.
 - **Interactive UI Dashboard:** Modern React + Vite + Tailwind CSS frontend (`:5173`) featuring an interactive transaction scanner, attack simulation presets, risk analytics, and real-time engine health indicators.
 - **1-Click Demo Launcher:** Automated shell script (`demo.sh`) to launch backend and frontend services with a single command.
@@ -27,23 +28,21 @@ Real-time Ethereum transaction firewall. Evaluates transactions before execution
  │           Interactive Web Dashboard (:5173)                 │
  └─────────────────────────────┬───────────────────────────────┘
                                │
-                               │ POST /predict or /predict/explain
+                               │ POST /scan  (or /predict, /predict/explain)
                                ▼
  ┌─────────────────────────────────────────────────────────────┐
  │           FastAPI Inference Engine (:8001)                  │
  ├─────────────────────────────────────────────────────────────┤
- │   Feature Extraction & Normalization (20 Features)          │
+ │   Server-side Feature Extraction (20 DeFiTransLyzer feats)  │
+ ├─────────────────────────────────────────────────────────────┤
+ │   Per-client rate limit (RATE_LIMIT_PER_MINUTE)             │
  ├─────────────────────────────┬───────────────────────────────┤
  │                             ▼                               │
- │   ┌─────────────────────────────┐ ┌───────────────────────┐ │
- │   │ Random Forest Model (.joblib)│ │ DeFiGuard Net (.joblib)│ │
- │   │ 200 Estimators (Tabular)    │ │ (GNN + Tabular Fusion)│ │
- │   └──────────────┬──────────────┘ └───────────┬───────────┘ │
- │                  │                            │             │
- │                  └──────────────┬─────────────┘             │
- │                                 ▼                           │
- │                     Dual-Model Ensemble Scorer              │
- │                     (Strategy: Max Recall / Weighted)       │
+ │            ┌─────────────────────────────────┐              │
+ │            │ DeFiGuard (.joblib)             │              │
+ │            │ GATv2 graph + tabular encoders  │              │
+ │            │ → cross-attention fusion        │              │
+ │            └────────────────┬────────────────┘              │
  ├─────────────────────────────────────────────────────────────┤
  │   Explainer Engine (Deterministic Heuristics + Groq API)    │
  └─────────────────────────────┬───────────────────────────────┘
@@ -52,7 +51,7 @@ Real-time Ethereum transaction firewall. Evaluates transactions before execution
                ┌───────────────────────────────┐
                │                               │
             [BLOCKED]                       [SAFE]
-        (Fraud Prob > 0.65)           (Fraud Prob <= 0.65)
+     (prob > FRAUD_THRESHOLD)      (prob <= FRAUD_THRESHOLD)
                │                               │
                ▼                               ▼
         Threat Detected                 Safe to Sign
@@ -66,31 +65,30 @@ Real-time Ethereum transaction firewall. Evaluates transactions before execution
 ```
 .
 ├── backend/
-│   ├── download_model.py              # Automated download of trained RF model from GDrive
-│   ├── models/                        # Pre-trained models (.joblib) & DeFiGuard stub modules
-│   │   ├── random_forest_fraud_model.joblib
+│   ├── models/                        # DeFiGuard model (.joblib, versioned) + model code
 │   │   ├── defi_guard_model.joblib
-│   │   ├── defiguard.py
-│   │   └── predictor.py
+│   │   ├── defiguard.py               # DeFiGuard network (GATv2 + cross-attention fusion)
+│   │   └── predictor.py               # DeFiGuardPredictor + ego-graph builder
 │   ├── feature_extractor/             # DeFiTransLyzer feature extraction pipeline
 │   │   ├── extractor.py               # Raw RPC & tx payload parser
 │   │   └── metrics.py                 # Feature computation helper utilities
-│   ├── inference_engine/              # FastAPI dual-model inference & explainability service
+│   ├── inference_engine/              # FastAPI inference & explainability service
 │   │   ├── api/                       # API routes (main.py, schemas.py, dependencies.py)
-│   │   ├── core/                      # Configuration & settings management (config.py)
-│   │   └── services/                  # Prediction service, ensemble scorer & risk explainer
-│   ├── torch_geometric/               # Lightweight local unpickling stubs
-│   ├── tests/                         # Backend test suite (extractor, inference, ensemble)
-│   ├── conftest.py                    # Pytest configuration & fixtures
-│   └── requirements.txt               # Backend Python runtime dependencies
+│   │   ├── core/                      # Settings (config.py) & rate limiting (rate_limit.py)
+│   │   └── services/                  # DeFiGuard prediction service & risk explainer
+│   ├── scripts/                       # evaluate_model.py, generate_defiguard_golden.py
+│   ├── tests/                         # Backend test suite (+ fixtures/defiguard_golden.json)
+│   ├── conftest.py                    # Puts backend/ on sys.path for pytest
+│   ├── requirements.txt               # Runtime dependencies
+│   └── requirements-dev.txt           # + pytest, pandas, gdown
 ├── frontend/                          # React + Vite + Tailwind CSS dashboard
 │   ├── src/
 │   │   ├── components/                # UI components (AIExplanation, Analytics, Hero, etc.)
-│   │   ├── services/api.js            # API client for inference engine
+│   │   ├── services/api.js            # API client (POST /scan, GET /health) + form validation
 │   │   └── App.jsx                    # Root application layout
 │   └── package.json                   # Frontend dependencies and scripts
 ├── demo.sh                            # 1-Click demo launcher for backend & frontend
-├── .env.example                       # Template for environment variables
+├── .env.example                       # Template for the single root .env (backend + frontend)
 └── Readme.md                          # Project documentation
 ```
 
@@ -100,7 +98,7 @@ Real-time Ethereum transaction firewall. Evaluates transactions before execution
 
 ### Prerequisites
 - **Python** 3.10+
-- **Node.js** 18+ & **npm** 9+
+- **Node.js** 20+ & **npm** 11+ (npm 10 cannot install the test dependencies; use `npm i -g npm@11` or prefix commands with `npx npm@11`)
 - **Git**
 
 ---
@@ -110,12 +108,9 @@ Real-time Ethereum transaction firewall. Evaluates transactions before execution
 Start all services (Inference Engine on `:8001`, Vite Frontend on `:5173`):
 
 ```bash
-# 1. Download pre-trained model (if not already downloaded)
-cd backend && python download_model.py && cd ..
-
-# 2. Launch all services
 bash demo.sh
 ```
+The DeFiGuard model (`backend/models/defi_guard_model.joblib`, 1.5 MB) is versioned with the code; `demo.sh` stops with instructions if it is missing.
 
 **Helpful Demo Commands:**
 ```bash
@@ -129,158 +124,79 @@ Access the Web Dashboard at: **`http://localhost:5173`**
 
 ### Option 2: Manual Step-by-Step Setup
 
-#### 1. Download the Trained Model
-The pre-trained Random Forest model (~41 MB) is hosted on Google Drive:
+#### 1. Configure Environment Variables
 ```bash
-cd backend
-python download_model.py
-cd ..
+cp .env.example .env   # one file in the repository root, read by both backend and frontend
 ```
 
-#### 2. Configure Environment Variables
+#### 2. Start the Backend Inference Engine
 ```bash
-cp .env.example .env
-```
-
-#### 3. Start the Backend Inference Engine
-```bash
+python -m venv .venv && source .venv/bin/activate   # from the repository root
 cd backend
-pip install -r requirements.txt
+pip install -r requirements-dev.txt                 # runtime deps + test/eval tools
 uvicorn inference_engine.api.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 *Interactive Swagger documentation available at: `http://localhost:8001/docs`*
 
-#### 4. Start the Frontend Dashboard (in a new terminal)
+#### 3. Start the Frontend Dashboard (in a new terminal)
 ```bash
 cd frontend
-npm install
+npm ci        # installs the exact versions in package-lock.json (npm ≥ 11)
 npm run dev
 ```
 *Open `http://localhost:5173` in your browser.*
 
 ---
 
-## 🧪 Attack Simulations & cURL Demos
+## 🧪 API Examples (cURL)
 
-You can test the firewall inference engine directly using `curl`:
+### Scan a transaction from user-level parameters — `POST /scan`
+The dashboard uses this endpoint. Features are extracted server-side; `explain`
+(default `true`) adds a risk explanation, rule-based unless `use_llm` is `true`
+and `GROQ_API_KEY` is set.
+```bash
+curl -s -X POST http://localhost:8001/scan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from": "0x3b2a1f88e4c5d6a7890bcdef2345678901bcde22",
+    "to":   "0x8c5d7e12f3a4b5c6d7890abcdef3456789012cd3",
+    "value_eth": 0.45,
+    "gas_price_gwei": 22,
+    "gas_limit": 21000,
+    "block_number": 19000000,
+    "log_count": 0,
+    "use_llm": false
+  }' | python3 -m json.tool
+```
+Response: `{"features": {...20 features...}, "prediction": {"is_fraud", "fraud_probability", "threshold", "model", "exec_time_ms"}, "explanation": {"risk_level", "reasons", "recommendation", "is_fallback", "exec_time_ms"}}`.
 
-### 1. 🎣 Phishing Drainer (Self-Transfer + Abnormal Gas) → **BLOCKED**
+### Score a pre-extracted feature vector — `POST /predict`
+Omitted features default to the values a pending transaction has in the
+training data (mostly `0`, `gas_price_ratio = 1`).
 ```bash
 curl -s -X POST http://localhost:8001/predict \
   -H "Content-Type: application/json" \
-  -d '{
-    "length_transaction_hash": 66.0,
-    "length_to": 42.0,
-    "length_from": 42.0,
-    "is_same_address": 1.0,
-    "index": 1.0,
-    "block_number": 1650000.0,
-    "chain_id": 1.0,
-    "cumulative_gas_used": 848000.0,
-    "gas_used": 848000.0,
-    "gas_efficiency": 1.0,
-    "effective_gas_price": 204000000000.0,
-    "total_gas_cost": 172992000000000000.0,
-    "gas_price_ratio": 10.2,
-    "gas_per_log_event": 848000.0,
-    "value": 0.0,
-    "normalized_token_transfer": 0.0,
-    "log_count": 0.0,
-    "log_removed": 0.0,
-    "length_log": 0.0,
-    "event_activity_flag": 0.0
-  }' | python3 -m json.tool
+  -d '{"length_transaction_hash": 66, "length_to": 42, "length_from": 42,
+       "block_number": 4228383, "chain_id": 1, "gas_used": 21000,
+       "effective_gas_price": 60000000000, "total_gas_cost": 1260000000000000,
+       "value": 9000000000000000000}' | python3 -m json.tool
 ```
 
-### 2. 🍯 Honeypot Scam (High Value + Inflated Gas Price) → **BLOCKED**
-```bash
-curl -s -X POST http://localhost:8001/predict \
-  -H "Content-Type: application/json" \
-  -d '{
-    "length_transaction_hash": 66.0,
-    "length_to": 42.0,
-    "length_from": 42.0,
-    "is_same_address": 0.0,
-    "index": 5.0,
-    "block_number": 1680319.0,
-    "chain_id": 1.0,
-    "cumulative_gas_used": 1200000.0,
-    "gas_used": 1020000.0,
-    "gas_efficiency": 0.85,
-    "effective_gas_price": 50000000000.0,
-    "total_gas_cost": 51000000000000000.0,
-    "gas_price_ratio": 2.5,
-    "gas_per_log_event": 1020000.0,
-    "value": 10000000000000000000.0,
-    "normalized_token_transfer": 0.01,
-    "log_count": 0.0,
-    "log_removed": 0.0,
-    "length_log": 0.0,
-    "event_activity_flag": 0.0
-  }' | python3 -m json.tool
-```
+### Other endpoints
+| Endpoint | Purpose |
+|---|---|
+| `POST /predict/explain` (alias `/api/transactions/explain`) | `/predict` + explanation; response includes `prediction` |
+| `POST /extract` | Raw JSON-RPC transaction / receipt → 20-feature vector |
+| `GET /health` | Model status and threshold (not rate limited) |
+| `GET /stats` | Predictions, fraud rate and average latency since startup (not rate limited) |
 
-### 3. 🔄 Reentrancy Exploit (Excessive Gas Allocation) → **BLOCKED**
-```bash
-curl -s -X POST http://localhost:8001/predict \
-  -H "Content-Type: application/json" \
-  -d '{
-    "length_transaction_hash": 66.0,
-    "length_to": 42.0,
-    "length_from": 42.0,
-    "is_same_address": 0.0,
-    "index": 12.0,
-    "block_number": 1727488.0,
-    "chain_id": 1.0,
-    "cumulative_gas_used": 2490000.0,
-    "gas_used": 2116500.0,
-    "gas_efficiency": 0.85,
-    "effective_gas_price": 100000000000.0,
-    "total_gas_cost": 211650000000000000.0,
-    "gas_price_ratio": 5.0,
-    "gas_per_log_event": 2116500.0,
-    "value": 2000000000000000000.0,
-    "normalized_token_transfer": 0.002,
-    "log_count": 0.0,
-    "log_removed": 0.0,
-    "length_log": 0.0,
-    "event_activity_flag": 0.0
-  }' | python3 -m json.tool
-```
-
-### 4. ✅ Legitimate Transfer (Normal Parameters) → **ALLOWED**
-```bash
-curl -s -X POST http://localhost:8001/predict \
-  -H "Content-Type: application/json" \
-  -d '{
-    "length_transaction_hash": 66.0,
-    "length_to": 42.0,
-    "length_from": 42.0,
-    "is_same_address": 0.0,
-    "index": 2.0,
-    "block_number": 100000.0,
-    "chain_id": 1.0,
-    "cumulative_gas_used": 52500.0,
-    "gas_used": 21000.0,
-    "gas_efficiency": 1.0,
-    "effective_gas_price": 22000000000.0,
-    "total_gas_cost": 462000000000000.0,
-    "gas_price_ratio": 1.1,
-    "gas_per_log_event": 21000.0,
-    "value": 450000000000000000.0,
-    "normalized_token_transfer": 0.00045,
-    "log_count": 0.0,
-    "log_removed": 0.0,
-    "length_log": 0.0,
-    "event_activity_flag": 0.0
-  }' | python3 -m json.tool
-```
+Invalid input (negative or non-finite numbers, oversized strings) returns `422` with `detail: [{loc, msg, type}]`. More than `RATE_LIMIT_PER_MINUTE` scoring requests from one client in a minute returns `429` with a `Retry-After` header. `503` means the model is not loaded (see `/health`).
 
 ---
 
 ## 📊 20-Feature DeFiTransLyzer Schema
 
-The ensemble evaluates transactions against 20 normalized structural and behavioral metrics:
+The models consume 20 structural and behavioural metrics. Definitions follow the **DeFiTransLyzer training data** (measured from its CSVs and the scaler statistics stored with DeFiGuard), which differs from the column names in a few places — sending the "textbook" meaning puts inputs far outside what the models were trained on:
 
 | Category | Feature Name | Description |
 |---|---|---|
@@ -293,17 +209,47 @@ The ensemble evaluates transactions against 20 normalized structural and behavio
 | | `chain_id` | Network chain ID (1 = Mainnet, 11155111 = Sepolia) |
 | | `cumulative_gas_used` | Cumulative gas consumed in the block |
 | **Gas Dynamics** | `gas_used` | Estimated / actual gas units consumed |
-| | `gas_efficiency` | Ratio of gas consumed to gas limit |
+| | `gas_efficiency` | Cumulative block gas ÷ this transaction's gas (0 before the tx is mined) |
 | | `effective_gas_price` | Gas price paid per gas unit (wei) |
 | | `total_gas_cost` | Total fee: `gas_used × effective_gas_price` |
-| | `gas_price_ratio` | Ratio of effective gas price to base fee |
-| | `gas_per_log_event` | Gas consumption per emitted event log |
+| | `gas_price_ratio` | Paid ÷ offered gas price (1.0 for pending transactions) |
+| | `gas_per_log_event` | Constant 0 in the training data |
 | **Value Transfer** | `value` | Native ETH amount transferred (in wei) |
-| | `normalized_token_transfer`| Value normalized against baseline (clamped to [0, 1]) |
-| **Event Activity** | `log_count` | Number of logs emitted by contract call |
-| | `length_log` | Logarithmic transformation `log(log_count + 1)` |
+| | `normalized_token_transfer`| Constant 0 in the training data |
+| **Event Activity** | `log_count` | Constant 0 in the training data (the count is in `length_log`) |
+| | `length_log` | Number of log entries emitted |
 | | `event_activity_flag` | Binary indicator (1.0 if logs are emitted) |
 | | `log_removed` | Flag indicating chain reorganization log removal |
+
+---
+
+## 📈 Model Evaluation
+
+`backend/scripts/evaluate_model.py` scores 2,000 fraud + 2,000 legitimate transactions sampled from the DeFiTransLyzer CSVs (not included in this repo) using only the 20 features the API receives. The **pending** view zeroes the receipt-only fields (`cumulative_gas_used`, `index`, `gas_efficiency`) — what `/scan` can know before a transaction is mined.
+
+| DeFiGuard threshold (pending view) | Precision | Recall | False-positive rate |
+|---|---|---|---|
+| 0.50 | 0.740 | 0.991 | 0.347 |
+| 0.65 | 0.758 | 0.988 | 0.316 |
+| **0.80 (default)** | **0.780** | **0.972** | **0.275** |
+| 0.90 | 0.809 | 0.945 | 0.223 |
+
+```bash
+cd backend
+PYTHONPATH=. python scripts/evaluate_model.py --csv-dir /path/to/CSVs --n 2000 \
+  --json-out ../frontend/src/data/modelEvaluation.json
+```
+`--json-out` regenerates the figures the dashboard shows (Hero, How It Works, Features, Analytics read them via `frontend/src/data/modelMetrics.js`); re-run it after changing the model or `FRAUD_THRESHOLD`. The Analytics counters (transactions scanned, blocked, latency) are live values from `GET /stats`.
+
+A Random Forest (7 features) used to run alongside DeFiGuard. Measured on the same data it performed at chance level (precision 0.47, recall 0.40, FPR 0.46 at 0.65), and no way of combining it with DeFiGuard improved on DeFiGuard alone at comparable recall (e.g. a weighted blend reached precision 0.90 but recall only 0.39), so it was removed.
+
+**Known limitations**
+- Rate limiting is in-process: limits are per server process, and `X-Forwarded-For` is trusted only from a loopback peer (the Vite proxy). Behind another reverse proxy, every client shares the proxy's address unless that proxy runs on the same host.
+- There is no authentication; do not expose the API publicly without putting it behind an authenticating gateway.
+- DeFiGuard's ego-graph is built from the transaction node only. It was trained on receipt graphs that also contained token-holding nodes from a token database that is not available for pending transactions; with sender/recipient nodes but no token nodes its output collapses to ~0.014 for every input.
+- With 20 of its 45 training features, DeFiGuard has a much higher false-positive rate than in its paper setting (≈3% FPR with all 45 features on the same data).
+- The dashboard's presets are synthetic and their labels are not ground truth: under the default configuration the four "attack" presets are scored SAFE (Phishing Drainer at medium risk) and "Legit Transfer" is BLOCKED — consistent with the false-positive rate above. They illustrate the UI, not detection capability. A transfer shaped like real labelled fraud (9 ETH, 60 Gwei, block 4,228,383) is blocked (see `tests/test_scan.py`).
+- `DeFiGuard` parity with the training repository's reference predictor is enforced by `tests/test_defiguard.py` (`tests/fixtures/defiguard_golden.json`, regenerated with `scripts/generate_defiguard_golden.py`).
 
 ---
 
@@ -313,31 +259,37 @@ Configure these in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
-| `VITE_API_BASE_URL` | `http://localhost:8001` | FastAPI inference API base URL for the frontend |
-| `MODEL_PATH` | `models/random_forest_fraud_model.joblib` | Path to trained Random Forest `.joblib` model file |
-| `DEFIGUARD_MODEL_PATH` | `models/defi_guard_model.joblib` | Path to trained DeFiGuard `.joblib` model file |
-| `ENSEMBLE_MODE` | `max` | Ensemble mode: `max`, `mean`, `weighted`, `rf_only`, `dg_only` |
-| `FRAUD_THRESHOLD` | `0.65` | Probability cutoff above which transactions are flagged |
-| `LOG_LEVEL` | `INFO` | Python logging verbosity (`DEBUG`, `INFO`, `WARNING`) |
-| `GROQ_API_KEY` | *(optional)* | API key for LLM-powered plain language risk explanations |
+| `VITE_API_BASE_URL` | *(blank)* | API origin for the frontend. Leave blank to use the Vite dev/preview proxy |
+| `DEFIGUARD_MODEL_PATH` | `models/defi_guard_model.joblib` | DeFiGuard model (relative to `backend/`) |
+| `FRAUD_THRESHOLD` | `0.80` | Block when the fraud probability exceeds this value (0–1, exclusive) |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Scoring requests per client IP per minute (`0` disables) |
+| `CORS_ORIGINS` | `*` | Comma-separated allowed origins — restrict in production |
+| `LOG_LEVEL` | `INFO` | Python logging verbosity |
+| `GROQ_API_KEY` | *(empty)* | Enables LLM-written explanations |
+| `LLM_MAX_CALLS_PER_MINUTE` | `20` | Process-wide cap on Groq calls (`0` disables the LLM) |
+
+The `.env` file is read from the repository root (and `backend/.env`) regardless of the working directory; real environment variables override it. Invalid values (e.g. a threshold outside (0, 1)) stop the backend at startup with a clear error. Settings from the removed Random Forest setup (`MODEL_PATH`, `ENSEMBLE_MODE`, `RF_WEIGHT`, `DG_WEIGHT`) are ignored with a startup warning.
 
 ---
 
 ## 🧪 Running Tests
 
-To run the backend test suite across the feature extractor, inference engine, and ensemble scorer:
-
+Backend (unit, real-model integration, DeFiGuard parity, API, settings, explainer):
 ```bash
 cd backend
-pytest tests/ -v
+PYTHONPATH=. pytest tests/ -v
 ```
+Tests pin their own settings and never call the real Groq API. Real-model tests are skipped when the `.joblib` files are absent.
 
-To run frontend linting and production build checks:
+Frontend (API client + form validation, Node's built-in test runner), lint and build:
 ```bash
 cd frontend
+npm test
 npm run lint
 npm run build
 ```
+
+Or from the repository root: `npm test` (both suites).
 
 ---
 

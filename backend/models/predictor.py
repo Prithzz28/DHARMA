@@ -2,231 +2,311 @@
 """
 models/predictor.py
 ====================
-Class definitions required for deserialising and running ``defi_guard_model.joblib``.
+``DeFiGuardPredictor`` — the wrapper object stored in ``defi_guard_model.joblib``
+— plus the inductive ego-graph builder used at inference time.
 
-The DeFiGuard model was serialised via ``joblib.dump()`` with pickle, which
-stores objects by *class path*. At deserialization time Python must find the
-class ``models.predictor.DeFiGuardPredictor`` in the import path.
+The graph builder and forward pass are ported from the DeFiGuard training
+repository (``models/predictor.py``) so that inference matches training:
 
-When deserialized, ``DeFiGuardPredictor`` contains:
-    - ``_model``: PyTorch ``DeFiGuard`` nn.Module (TabularEncoder, GraphEncoder, CrossAttentionFusion, Classifier)
-    - ``model_state_dict``: OrderedDict of learned weights
-    - ``feature_names``: List of 45 tabular feature names
-    - ``scaler_mean``: NumPy array for StandardScaler mean
-    - ``scaler_scale``: NumPy array for StandardScaler scale/std
-    - ``training_metrics``: Dict with train/val metrics
-    - ``model_config``: Dict with architecture hyperparams
+    tabular (45 features, StandardScaler)  ─┐
+                                             ├─ DeFiGuard.forward → sigmoid
+    1-hop ego-graph (tx + address nodes)    ─┘
+
+The pickled object carries ``model_state_dict``, ``scaler_mean``,
+``scaler_scale``, ``model_config``, ``feature_names`` and ``training_metrics``.
+On first use the network is rebuilt from ``model_state_dict`` with a *strict*
+``load_state_dict`` (any architecture mismatch fails loudly) and memoised.
+
+The class path ``models.predictor.DeFiGuardPredictor`` is referenced by the
+pickle stream — do NOT rename or move it.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Union
+import threading
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
+import torch
+
+from models.defiguard import DeFiGuard
 
 logger = logging.getLogger(__name__)
 
-try:
-    import torch
-    import torch.nn as nn
-    _TORCH_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _TORCH_AVAILABLE = False
-    class _FakeModule:
-        def __init__(self, *a: Any, **kw: Any) -> None: ...
-        def __call__(self, *a: Any, **kw: Any) -> Any: ...
-    class nn:  # type: ignore[no-redef]
-        Module = _FakeModule
+# --------------------------------------------------------------------------- #
+# Constants (must match the training repository)
+# --------------------------------------------------------------------------- #
+TX_NODE_DIM = 8
+ADDR_NODE_DIM = 4
+EDGE_FEATURE_DIM = 2
+MAX_NODE_DIM = max(TX_NODE_DIM, ADDR_NODE_DIM)
 
-
-# ---------------------------------------------------------------------------
-# Default tabular feature ordering (45 features matching DeFiGuard training)
-# ---------------------------------------------------------------------------
-_DEFAULT_TABULAR_FEATURES: List[str] = [
-    "block_number",
-    "chain_id",
-    "length_to",
-    "length_log",
-    "cumulative_gas_used",
-    "effective_gas_price",
-    "total_gas_cost",
-    "gas_used",
-    "gas_price_ratio",
-    "is_contract_creation",
-    "is_same_address",
-    "gas_efficiency",
-    "value",
-    "duration_seconds",
-    "error_rate",
-    "number_of_errors",
-    "log_removed",
-    "status",
-    "index",
-    "gas_per_log_event",
-    "event_activity_flag",
-    "normalized_token_transfer",
-    "token_transfer_amount",
-    "log_count",
-    "num_transaction",
-    "gas_used.gas_used_average",
-    "gas_used.gas_used_standard_deviation",
+DEFAULT_TABULAR_FEATURES: List[str] = [
+    "block_number", "chain_id", "length_to", "length_log",
+    "cumulative_gas_used", "effective_gas_price", "total_gas_cost",
+    "gas_used", "gas_price_ratio", "is_contract_creation",
+    "is_same_address", "gas_efficiency", "value", "duration_seconds",
+    "error_rate", "number_of_errors",
+    "log_removed", "status", "index", "gas_per_log_event",
+    "event_activity_flag", "normalized_token_transfer",
+    "token_transfer_amount", "log_count", "num_transaction",
+    "gas_used.gas_used_average", "gas_used.gas_used_standard_deviation",
     "gas_used.gas_used_coefficient_of_variation",
-    "gas_prices.gas_prices_average",
-    "gas_prices.gas_prices_standard_deviation",
-    "values.values_average",
-    "values.values_standard_deviation",
+    "gas_prices.gas_prices_average", "gas_prices.gas_prices_standard_deviation",
+    "values.values_average", "values.values_standard_deviation",
     "nonce.nonce_average",
-    "erc_20_Name_Length",
-    "erc_20_Symbol_Length",
-    "erc_20_Name_Uppercase_Ratio",
-    "erc_20_Symbol_Is_Uppercase",
-    "erc_20_Name_Entropy",
-    "erc_20_Symbol_Entropy",
-    "erc_20_TokenDivisor",
-    "erc_20_Normalized_Quantity",
-    "erc_721_Name_Length",
-    "erc_721_Symbol_Length",
-    "erc_721_Name_Entropy",
-    "erc_721_Symbol_Entropy",
+    "erc_20_Name_Length", "erc_20_Symbol_Length",
+    "erc_20_Name_Uppercase_Ratio", "erc_20_Symbol_Is_Uppercase",
+    "erc_20_Name_Entropy", "erc_20_Symbol_Entropy",
+    "erc_20_TokenDivisor", "erc_20_Normalized_Quantity",
+    "erc_721_Name_Length", "erc_721_Symbol_Length",
+    "erc_721_Name_Entropy", "erc_721_Symbol_Entropy",
 ]
 
 
+# --------------------------------------------------------------------------- #
+# Parsing helpers (identical semantics to the training repository)
+# --------------------------------------------------------------------------- #
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    """Parse float / bool / status string to float; NaN and inf become *default*."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        if np.isnan(val) or np.isinf(val):
+            return default
+        return float(val)
+    val_str = str(val).strip().lower()
+    if val_str in ("1", "true", "ok", "success", "0x1"):
+        return 1.0
+    if val_str in ("0", "false", "notok", "failed", "0x0"):
+        return 0.0
+    try:
+        f = float(val)
+    except (ValueError, TypeError):
+        return default
+    if np.isnan(f) or np.isinf(f):
+        return default
+    return f
+
+
+def _safe_log(val: Any, default: float = 0.0) -> float:
+    """log1p of a non-negative value; *default* otherwise."""
+    f = _safe_float(val, default=0.0)
+    return float(np.log1p(f)) if f > 0 else default
+
+
+def _hash_to_int(addr_str: Any, bits: int = 16) -> float:
+    """Stable [0, 1] encoding of an address string."""
+    if not addr_str:
+        return 0.0
+    h = hashlib.md5(str(addr_str).lower().encode()).hexdigest()
+    return float(int(h[:4], 16) / (2**bits - 1))
+
+
+def _addr_node(addr: str, role: float, kind: float) -> np.ndarray:
+    feat = np.zeros(ADDR_NODE_DIM, dtype=np.float32)
+    feat[0] = len(addr)
+    feat[1] = role
+    feat[2] = _hash_to_int(addr)
+    feat[3] = kind
+    return feat
+
+
+def build_ego_graph_for_inference(tx_data: Mapping[str, Any]) -> Dict[str, np.ndarray]:
+    """Construct the inductive 1-hop ego-graph for a single transaction.
+
+    Nodes: 0 = transaction (type 0); sender, recipient, contract and log-emitting
+    addresses (type 1). Edges: FROM→TX, TX→TO, FROM→TO, TX→CONTRACT/LOG.
+    """
+    nodes: List[tuple] = []
+    edges: List[tuple] = []
+    addr_to_idx: Dict[str, int] = {}
+
+    tx_features = np.zeros(TX_NODE_DIM, dtype=np.float32)
+    tx_features[0] = _safe_log(tx_data.get("gas_used", 0))
+    tx_features[1] = _safe_log(tx_data.get("value", 0))
+    tx_features[2] = _safe_float(tx_data.get("status", 0))
+    tx_features[3] = _safe_log(tx_data.get("effective_gas_price", tx_data.get("gas_price", 0)))
+    tx_features[4] = _safe_log(tx_data.get("cumulative_gas_used", 0))
+    tx_features[5] = _safe_log(tx_data.get("block_number", 0))
+    tx_features[6] = _safe_float(tx_data.get("chain_id", 1), default=1.0)
+    tx_features[7] = _safe_log(tx_data.get("nonce", 0))
+    nodes.append((0, tx_features))
+
+    transfer_edge = np.array(
+        [_safe_log(tx_data.get("gas_used", 0)), _safe_log(tx_data.get("value", 0))],
+        dtype=np.float32,
+    )
+
+    from_addr = str(tx_data.get("from_address", tx_data.get("from", "")) or "").lower()
+    if from_addr:
+        from_idx = len(nodes)
+        addr_to_idx[from_addr] = from_idx
+        nodes.append((1, _addr_node(from_addr, 0.0, 0.0)))
+        edges.append((from_idx, 0, transfer_edge.copy()))
+
+    to_addr = str(tx_data.get("to_address", tx_data.get("to", "")) or "").lower()
+    if to_addr and to_addr != from_addr:
+        to_idx = len(nodes)
+        addr_to_idx[to_addr] = to_idx
+        nodes.append((1, _addr_node(to_addr, 1.0, 1.0)))
+        edges.append((0, to_idx, transfer_edge.copy()))
+        if from_addr in addr_to_idx:
+            edges.append((addr_to_idx[from_addr], to_idx, transfer_edge.copy()))
+
+    contract_addr = str(tx_data.get("contract_address", "") or "").lower()
+    if contract_addr and contract_addr not in addr_to_idx:
+        c_idx = len(nodes)
+        addr_to_idx[contract_addr] = c_idx
+        nodes.append((1, _addr_node(contract_addr, 1.0, 2.0)))
+        edges.append((0, c_idx, np.zeros(EDGE_FEATURE_DIM, dtype=np.float32)))
+
+    logs = tx_data.get("logs")
+    for log_event in logs if isinstance(logs, list) else []:
+        if not isinstance(log_event, dict):
+            continue
+        log_addr = str(log_event.get("address", "") or "").lower()
+        if log_addr and log_addr not in addr_to_idx:
+            l_idx = len(nodes)
+            addr_to_idx[log_addr] = l_idx
+            nodes.append((1, _addr_node(log_addr, 1.0, 3.0)))
+            edges.append((0, l_idx, np.zeros(EDGE_FEATURE_DIM, dtype=np.float32)))
+
+    node_features = np.zeros((len(nodes), MAX_NODE_DIM), dtype=np.float32)
+    node_types = np.zeros(len(nodes), dtype=np.int64)
+    for i, (ntype, feat) in enumerate(nodes):
+        node_types[i] = ntype
+        node_features[i, : len(feat)] = feat
+
+    if edges:
+        edge_index = np.array([[e[0], e[1]] for e in edges], dtype=np.int64).T
+        edge_features = np.stack([e[2] for e in edges])
+    else:
+        edge_index = np.zeros((2, 0), dtype=np.int64)
+        edge_features = np.zeros((0, EDGE_FEATURE_DIM), dtype=np.float32)
+
+    return {
+        "node_features": node_features,
+        "node_types": node_types,
+        "edge_index": edge_index,
+        "edge_features": edge_features,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Predictor
+# --------------------------------------------------------------------------- #
 class DeFiGuardPredictor:
-    """
-    Wrapper predictor class for the DeFiGuard model deserialised from joblib.
-    """
+    """Inference wrapper around the full multi-modal DeFiGuard network."""
 
-    def __init__(self) -> None:
-        from models.defiguard import DeFiGuard
-
-        self._model: Optional[DeFiGuard] = DeFiGuard() if _TORCH_AVAILABLE else None
-        self.model_state_dict: Optional[Dict[str, Any]] = None
-        self.scaler_mean: Optional[np.ndarray] = None
-        self.scaler_scale: Optional[np.ndarray] = None
-        self.scaler_std: Optional[np.ndarray] = None
-        self.model_config: Optional[Dict[str, Any]] = None
-        self.feature_names: List[str] = list(_DEFAULT_TABULAR_FEATURES)
-        self.training_metrics: Optional[Dict[str, Any]] = None
-        self.classes_: Optional[np.ndarray] = np.array([0, 1])
-
-    def get_model(self) -> Optional[Any]:
-        """Return the inner PyTorch model instance."""
-        return getattr(self, "_model", None) or getattr(self, "model", None)
-
-    def eval(self) -> DeFiGuardPredictor:
-        """Set the underlying PyTorch model to evaluation mode."""
-        m = self.get_model()
-        if m is not None and hasattr(m, "eval"):
-            m.eval()
-        return self
-
-    def train(self, mode: bool = True) -> DeFiGuardPredictor:
-        """Set the underlying PyTorch model to training mode."""
-        m = self.get_model()
-        if m is not None and hasattr(m, "train"):
-            m.train(mode)
-        return self
-
-    def predict_tabular_proba(
+    def __init__(
         self,
-        features: Union[Dict[str, float], np.ndarray],
-        feature_order: Optional[Sequence[str]] = None,
+        model_state_dict: Dict[str, Any],
+        scaler_mean: Any,
+        scaler_scale: Any,
+        model_config: Optional[Dict[str, Any]] = None,
+        feature_names: Optional[List[str]] = None,
+        training_metrics: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.model_state_dict = model_state_dict
+        self.scaler_mean = np.asarray(scaler_mean, dtype=np.float32)
+        self.scaler_scale = np.asarray(scaler_scale, dtype=np.float32)
+        self.model_config = model_config or {
+            "tabular_dim": 45, "node_feature_dim": 8, "edge_feature_dim": 2,
+            "hidden_dim": 128, "embed_dim": 64, "n_heads": 4, "n_node_types": 3,
+        }
+        self.feature_names = list(feature_names or DEFAULT_TABULAR_FEATURES)
+        self.training_metrics = training_metrics or {}
+        self.classes_ = np.array([0, 1])
+        self._model: Optional[DeFiGuard] = None
+        self._lock = threading.Lock()
+
+    # The exported pickle also contains a pre-built ``_model``; it is discarded
+    # so the network is always rebuilt from ``model_state_dict`` (strictly).
+    def __getstate__(self) -> Dict[str, Any]:
+        state = dict(self.__dict__)
+        state["_model"] = None
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._model = None
+        self._lock = threading.Lock()
+
+    def get_model(self) -> DeFiGuard:
+        """Build (once) the DeFiGuard network from the stored weights, in eval mode."""
+        if self._model is None:
+            with self._lock:
+                if self._model is None:
+                    cfg = self.model_config
+                    model = DeFiGuard(
+                        tabular_dim=cfg["tabular_dim"],
+                        node_feature_dim=cfg["node_feature_dim"],
+                        edge_feature_dim=cfg["edge_feature_dim"],
+                        hidden_dim=cfg["hidden_dim"],
+                        embed_dim=cfg["embed_dim"],
+                        n_heads=cfg["n_heads"],
+                        n_node_types=cfg["n_node_types"],
+                        dropout=0.0,
+                    )
+                    model.load_state_dict(self.model_state_dict, strict=True)
+                    model.eval()
+                    self._model = model
+        return self._model
+
+    def _scaled_tabular(self, tx_data: Mapping[str, Any]) -> np.ndarray:
+        # Values beyond float32 range overflow to inf (the reference predictor
+        # then returns NaN); they are mapped to 0 here, like the training
+        # pipeline's inf → 0 cleaning.
+        with np.errstate(over="ignore", invalid="ignore"):
+            raw = np.array(
+                [_safe_float(tx_data.get(name, 0.0)) for name in self.feature_names],
+                dtype=np.float32,
+            )
+            raw = np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
+            # Guard zero-variance columns (sklearn would store scale 1).
+            scale = np.where(self.scaler_scale == 0, 1.0, self.scaler_scale).astype(np.float32)
+            scaled = (raw - self.scaler_mean) / scale
+        return np.nan_to_num(scaled, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+    def predict_fraud_proba(
+        self,
+        features: Mapping[str, Any],
+        raw_tx: Optional[Mapping[str, Any]] = None,
     ) -> float:
-        """Score a transaction feature dictionary or array via the tabular path.
+        """Fraud probability in [0, 1] for one transaction.
 
         Parameters
         ----------
         features:
-            Dictionary mapping feature name -> float, or a NumPy array.
-        feature_order:
-            Optional sequence of column names. Defaults to ``self.feature_names``.
-
-        Returns
-        -------
-        float
-            Fraud probability in [0, 1].
+            Feature dict (the 20 API features; missing DeFiGuard features are 0).
+        raw_tx:
+            Optional raw transaction fields used for the ego-graph — ``from``,
+            ``to``, ``nonce``, ``status``, ``logs``, ``contract_address``. Without
+            it the graph has only the transaction node.
         """
-        if not _TORCH_AVAILABLE:
-            raise RuntimeError("PyTorch is required for DeFiGuard inference.")
+        tx_data: Dict[str, Any] = dict(features)
+        if raw_tx:
+            for key in ("from", "to", "nonce", "status", "logs", "contract_address"):
+                if raw_tx.get(key) is not None:
+                    tx_data[key] = raw_tx[key]
 
-        m = self.get_model()
-        if m is None:
-            raise RuntimeError("Underlying DeFiGuard model is not initialized.")
-
-        # Prepare 2D float32 numpy array with bounds safety
-        if isinstance(features, dict):
-            cols = feature_order or getattr(self, "feature_names", None) or _DEFAULT_TABULAR_FEATURES
-            row = []
-            for col in cols:
-                val = features.get(col, 0.0)
-                try:
-                    val = float(val) if val is not None else 0.0
-                    if np.isnan(val) or np.isinf(val):
-                        val = 0.0
-                    val = max(-1e30, min(1e30, val))
-                    row.append(val)
-                except (ValueError, TypeError):
-                    row.append(0.0)
-            arr = np.array(row, dtype=np.float32).reshape(1, -1)
-        elif isinstance(features, np.ndarray):
-            arr = features.astype(np.float32)
-            if arr.ndim == 1:
-                arr = arr.reshape(1, -1)
-        else:
-            raise TypeError(f"Unsupported features type: {type(features).__name__}")
-
-        # Normalise via stored StandardScaler parameters
-        scaler_mean = getattr(self, "scaler_mean", None)
-        scaler_scale = getattr(self, "scaler_scale", None)
-        if scaler_scale is None:
-            scaler_scale = getattr(self, "scaler_std", None)
-
-        if scaler_mean is not None and scaler_scale is not None:
-            mean = np.asarray(scaler_mean, dtype=np.float32)
-            scale = np.asarray(scaler_scale, dtype=np.float32)
-            scale = np.where(scale == 0, 1.0, scale)
-            n = min(arr.shape[1], len(mean), len(scale))
-            arr[:, :n] = (arr[:, :n] - mean[:n]) / scale[:n]
-
-        # Clean any remaining NaNs or Infs from scaling
-        arr = np.nan_to_num(arr, nan=0.0, posinf=50.0, neginf=-50.0)
-        tensor_x = torch.from_numpy(arr)
-
-        m.eval()
+        model = self.get_model()
+        tabular = torch.from_numpy(self._scaled_tabular(tx_data)).unsqueeze(0)
+        graph = build_ego_graph_for_inference(tx_data)
+        node_features = torch.from_numpy(graph["node_features"])
         with torch.no_grad():
-            # tabular_encoder: (batch, 45) -> (batch, 64)
-            # classifier: (batch, 64) -> (batch, 1)
-            tab_emb = m.tabular_encoder(tensor_x)
-            logits = m.classifier(tab_emb)
-            prob = torch.sigmoid(logits).squeeze().item()
-            if np.isnan(prob) or np.isinf(prob):
-                prob = 0.5
-            prob = max(0.0, min(1.0, float(prob)))
-
-        return float(prob)
-
-    def predict_proba(
-        self,
-        features: Union[Dict[str, float], np.ndarray],
-        feature_order: Optional[Sequence[str]] = None,
-    ) -> Union[float, np.ndarray]:
-        """Predict fraud probability. If passed a dict, returns a float in [0, 1].
-        If passed a 2D numpy array, returns an array of shape (N, 2) matching sklearn.
-        """
-        if isinstance(features, dict):
-            return self.predict_tabular_proba(features, feature_order)
-
-        prob = self.predict_tabular_proba(features, feature_order)
-        return np.array([[1.0 - prob, prob]], dtype=np.float32)
-
-    def predict(
-        self,
-        features: Union[Dict[str, float], np.ndarray],
-        threshold: float = 0.5,
-    ) -> Union[int, np.ndarray]:
-        """Predict binary class (0 or 1)."""
-        if isinstance(features, dict):
-            p = self.predict_tabular_proba(features)
-            return int(p >= threshold)
-        p = self.predict_tabular_proba(features)
-        return np.array([int(p >= threshold)])
+            logits, _ = model(
+                tabular,
+                node_features,
+                torch.from_numpy(graph["node_types"]),
+                torch.from_numpy(graph["edge_index"]),
+                torch.from_numpy(graph["edge_features"]),
+                torch.zeros(node_features.shape[0], dtype=torch.long),
+            )
+            prob = float(torch.sigmoid(logits).item())
+        if not np.isfinite(prob):
+            raise ValueError("DeFiGuard produced a non-finite probability.")
+        return prob

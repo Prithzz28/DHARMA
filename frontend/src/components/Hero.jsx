@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowRight, Shield, Zap, Brain, Activity } from 'lucide-react';
+import { modelMetrics, pct } from '../data/modelMetrics';
 
 // Animated blockchain canvas
 function BlockchainCanvas() {
@@ -117,8 +118,8 @@ function BlockchainCanvas() {
   );
 }
 
-// Futuristic dashboard card
-function DashboardCard({ icon: Icon, label, value, change, color, delay }) {
+// Dashboard card showing one measured model figure (bar = the value as a share of 100%)
+function DashboardCard({ icon: Icon, label, value, fraction, barColor, color, delay }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -130,32 +131,33 @@ function DashboardCard({ icon: Icon, label, value, change, color, delay }) {
         <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${color}`}>
           <Icon className="w-4 h-4 text-white" />
         </div>
-        <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-          change > 0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-        }`}>
-          {change > 0 ? '+' : ''}{change}%
-        </span>
       </div>
       <div className="text-2xl font-bold text-white mb-1">{value}</div>
       <div className="text-xs text-gray-500 font-medium">{label}</div>
-      <div className="mt-3 h-1 bg-gray-800 rounded-full overflow-hidden">
-        <motion.div
-          initial={{ width: 0 }}
-          animate={{ width: `${Math.abs(change) * 5}%` }}
-          transition={{ delay: delay + 0.3, duration: 0.8 }}
-          className={`h-full rounded-full ${change > 0 ? 'bg-green-400' : 'bg-red-400'}`}
-        />
-      </div>
+      {fraction != null && (
+        <div className="mt-3 h-1 bg-gray-800 rounded-full overflow-hidden">
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${Math.round(fraction * 100)}%` }}
+            transition={{ delay: delay + 0.3, duration: 0.8 }}
+            className={`h-full rounded-full ${barColor}`}
+          />
+        </div>
+      )}
     </motion.div>
   );
 }
 
+// Score distribution of the evaluation sample (all labels), as bar heights
+const scoreBars = modelMetrics.scoreHistogram.map((b) => b.fraud + b.legit);
+const maxScoreBar = Math.max(...scoreBars);
+
 export default function Hero() {
   const dashboardCards = [
-    { icon: Shield, label: 'Ensemble Precision', value: '100%', change: 12, color: 'bg-gradient-to-br from-green-500 to-emerald-600', delay: 0.3 },
-    { icon: Activity, label: 'Inference Latency', value: '<80ms', change: -35, color: 'bg-gradient-to-br from-cyan-500 to-blue-600', delay: 0.45 },
-    { icon: Brain, label: 'Dual Model Recall', value: '100%', change: 5, color: 'bg-gradient-to-br from-purple-500 to-violet-600', delay: 0.6 },
-    { icon: Zap, label: 'Zero-Day Threats Blocked', value: '100%', change: 18, color: 'bg-gradient-to-br from-orange-500 to-red-600', delay: 0.75 },
+    { icon: Shield, label: 'Model Precision', value: pct(modelMetrics.precision), fraction: modelMetrics.precision, barColor: 'bg-green-400', color: 'bg-gradient-to-br from-green-500 to-emerald-600', delay: 0.3 },
+    { icon: Activity, label: 'Inference Latency (median)', value: `${modelMetrics.latencyMedianMs.toFixed(1)} ms`, fraction: null, color: 'bg-gradient-to-br from-cyan-500 to-blue-600', delay: 0.45 },
+    { icon: Brain, label: 'Model Recall', value: pct(modelMetrics.recall), fraction: modelMetrics.recall, barColor: 'bg-purple-400', color: 'bg-gradient-to-br from-purple-500 to-violet-600', delay: 0.6 },
+    { icon: Zap, label: 'False-Positive Rate', value: pct(modelMetrics.fpr), fraction: modelMetrics.fpr, barColor: 'bg-red-400', color: 'bg-gradient-to-br from-orange-500 to-red-600', delay: 0.75 },
   ];
 
   return (
@@ -246,10 +248,10 @@ export default function Hero() {
               className="flex flex-wrap gap-8 mt-12 pt-8 border-t border-white/5"
             >
               {[
-                { value: '2M+', label: 'Txns Scanned' },
-                { value: '99.7%', label: 'Accuracy' },
-                { value: '<100ms', label: 'Analysis Time' },
-                { value: '$4.2M', label: 'Fraud Blocked' },
+                { value: String(modelMetrics.features), label: 'Features Analyzed' },
+                { value: pct(modelMetrics.recall), label: 'Fraud Recall' },
+                { value: pct(modelMetrics.precision), label: 'Precision' },
+                { value: `${modelMetrics.latencyMedianMs.toFixed(1)} ms`, label: 'Median Inference' },
               ].map((stat) => (
                 <div key={stat.label}>
                   <div className="text-2xl font-bold text-white">{stat.value}</div>
@@ -295,15 +297,16 @@ export default function Hero() {
                 {/* Mini chart bar */}
                 <div className="glass rounded-xl p-4 border border-white/5">
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs font-semibold text-gray-400">Blockchain Activity</span>
-                    <span className="text-xs text-cyan-400">Last 24h</span>
+                    <span className="text-xs font-semibold text-gray-400">Fraud Score Distribution</span>
+                    <span className="text-xs text-cyan-400">{modelMetrics.sampleSize.toLocaleString()} labelled txns</span>
                   </div>
                   <div className="flex items-end gap-1.5 h-16">
-                    {[40, 60, 35, 80, 55, 70, 45, 90, 65, 75, 50, 85].map((h, i) => (
+                    {scoreBars.map((count, i) => (
                       <motion.div
-                        key={i}
+                        key={modelMetrics.scoreHistogram[i].range}
+                        title={`${modelMetrics.scoreHistogram[i].range}: ${count.toLocaleString()} txns`}
                         initial={{ height: 0 }}
-                        animate={{ height: `${h}%` }}
+                        animate={{ height: `${Math.max((count / maxScoreBar) * 100, 3)}%` }}
                         transition={{ delay: 0.8 + i * 0.05, duration: 0.4 }}
                         className="flex-1 rounded-t bg-gradient-to-t from-cyan-600 to-cyan-400 opacity-80"
                       />

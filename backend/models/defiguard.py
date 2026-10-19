@@ -2,186 +2,331 @@
 """
 models/defiguard.py
 ====================
-PyTorch ``nn.Module`` stub definitions for the DeFiGuard model.
+DeFiGuard: multi-modal graph-enhanced DeFi fraud detector (PyTorch).
 
-These classes **must** exist at deserialization time so that joblib/pickle can
-reconstruct the DeFiGuard model object from the ``.joblib`` file.
+Ported verbatim (minus the ablation baselines) from the DeFiGuard training
+repository so that the exported ``defi_guard_model.joblib`` runs the *same*
+forward pass it was trained with:
 
-Architecture (reverse-engineered from the stored state_dict and pickle stream):
+  1. TabularEncoder        — MLP over the 45 scaled tabular features.
+  2. GraphEncoder          — 2× GATv2Conv over a per-transaction ego-graph.
+  3. CrossAttentionFusion  — bidirectional cross-attention of both embeddings.
+  4. DeFiGuard             — classifier + contrastive projection heads.
 
-    TabularEncoder   — 3-block dense encoder over tabular feature inputs:
-                       Linear → BatchNorm → GELU → Dropout  (×3 blocks)
-                       State-dict keys: tabular_encoder.encoder.{0,1,4,5,8,9}.{weight,bias}
-
-    GraphEncoder     — GATConv-based graph encoder:
-                       type_embedding, node_proj, edge_proj,
-                       conv1, norm1, conv2, norm2, output_proj, dropout
-                       State-dict keys: graph_encoder.*
-
-    CrossAttentionFusion — Cross-attention fusion of tabular + graph streams:
-                       tab_to_graph, graph_to_tab, norm1, norm2, fusion_mlp
-                       State-dict keys: fusion.*
-
-    DeFiGuard        — Full DeFi Guard neural network:
-                       tabular_encoder (TabularEncoder) + _model (DeFiGuard shell)
-                       classifier + projection heads
-                       State-dict keys: classifier.*, projection.*
-
-Note: ALL classes below are **imported by pickle** during
-``joblib.load("defi_guard_model.joblib")``.  Do NOT rename, move, or delete them.
+The class names and module path (``models.defiguard``) are referenced by the
+pickle stream inside the .joblib file — do NOT rename or move them.
 """
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import GATv2Conv, global_max_pool, global_mean_pool
 
-
-# ---------------------------------------------------------------------------
-# TabularEncoder — dense feature encoder
-# ---------------------------------------------------------------------------
+# ─── Tabular Encoder ─────────────────────────────────────────────────────────
 
 class TabularEncoder(nn.Module):
-    """Encoder sub-network for tabular feature inputs.
+    """
+    MLP encoder for tabular (intrinsic transaction) features.
 
-    3-block sequential encoder:
-        Linear → BatchNorm1d → GELU → Dropout   ×3
+    Architecture: Input → [Linear → LayerNorm → GELU → Dropout] × N_layers → Output
     """
 
-    def __init__(self) -> None:
+    def __init__(self, input_dim, hidden_dim=128, output_dim=64,
+                 n_layers=3, dropout=0.2):
         super().__init__()
-        self.encoder: nn.Sequential = nn.Sequential()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover
+        layers = []
+        dims = [input_dim] + [hidden_dim] * (n_layers - 1) + [output_dim]
+
+        for i in range(len(dims) - 1):
+            layers.extend([
+                nn.Linear(dims[i], dims[i + 1]),
+                nn.LayerNorm(dims[i + 1]),
+                nn.GELU(),
+                nn.Dropout(dropout)
+            ])
+
+        self.encoder = nn.Sequential(*layers)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, input_dim) tabular features
+        Returns:
+            (B, output_dim) encoded features
+        """
         return self.encoder(x)
 
 
-# ---------------------------------------------------------------------------
-# GraphEncoder — GATConv-based graph encoder
-# ---------------------------------------------------------------------------
+# ─── Graph Encoder ───────────────────────────────────────────────────────────
 
 class GraphEncoder(nn.Module):
-    """GATConv-based graph encoder (stub for deserialization).
+    """
+    GATv2Conv-based graph encoder for ego-graph structural features.
 
-    Sub-modules (match state_dict key prefixes exactly):
-        type_embedding      — nn.Embedding
-        node_proj           — Sequential: Linear → LayerNorm → GELU
-        edge_proj           — nn.Linear
-        conv1, conv2        — GATConv-compatible stub layers (with edge features)
-        norm1, norm2        — nn.LayerNorm
-        output_proj         — Sequential: Linear → LayerNorm → GELU
-        dropout             — nn.Dropout
+    Uses node type embeddings to handle heterogeneous node types in a
+    homogeneous graph framework (more flexible and efficient than HeteroData
+    for small ego-graphs).
 
-    Note: In tabular-only inference mode this module is loaded but not called.
+    Architecture:
+      - Node type embedding (learned)
+      - Node feature projection
+      - 2× GATv2Conv layers with multi-head attention
+      - Global pooling (mean + max concatenation)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, node_feature_dim=8, edge_feature_dim=2,
+                 hidden_dim=64, output_dim=64, n_heads=4,
+                 n_node_types=3, dropout=0.2):
         super().__init__()
-        # Placeholders — exact shapes restored from stored state_dict
-        self.type_embedding: nn.Embedding = nn.Embedding(10, 64)
-        self.node_proj: nn.Sequential = nn.Sequential(
-            nn.Linear(64, 64),
-            nn.LayerNorm(64),
-            nn.GELU(),
+
+        self.n_node_types = n_node_types
+
+        # Node type embedding
+        self.type_embedding = nn.Embedding(n_node_types, 16)
+
+        # Project node features to hidden dim
+        self.node_proj = nn.Sequential(
+            nn.Linear(node_feature_dim + 16, hidden_dim),  # +16 for type embedding
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
         )
-        self.edge_proj: nn.Linear = nn.Linear(8, 64)
-        self.conv1: _GATConvStub = _GATConvStub(64, 64)
-        self.norm1: nn.LayerNorm = nn.LayerNorm(64)
-        self.conv2: _GATConvStub = _GATConvStub(64, 64)
-        self.norm2: nn.LayerNorm = nn.LayerNorm(64)
-        self.output_proj: nn.Sequential = nn.Sequential(
-            nn.Linear(64, 64),
-            nn.LayerNorm(64),
-            nn.GELU(),
+
+        # Edge feature projection
+        self.edge_proj = nn.Linear(edge_feature_dim, hidden_dim)
+
+        # GATv2Conv layers
+        self.conv1 = GATv2Conv(
+            hidden_dim, hidden_dim // n_heads,
+            heads=n_heads, edge_dim=hidden_dim,
+            dropout=dropout, add_self_loops=True
         )
-        self.dropout: nn.Dropout = nn.Dropout(0.3)
+        self.norm1 = nn.LayerNorm(hidden_dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover
-        return x
+        self.conv2 = GATv2Conv(
+            hidden_dim, hidden_dim // n_heads,
+            heads=n_heads, edge_dim=hidden_dim,
+            dropout=dropout, add_self_loops=True
+        )
+        self.norm2 = nn.LayerNorm(hidden_dim)
+
+        # Output projection (mean + max pooling → 2×hidden → output)
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_dim * 2, output_dim),
+            nn.LayerNorm(output_dim),
+            nn.GELU()
+        )
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, node_features, node_types, edge_index, edge_features, batch):
+        """
+        Args:
+            node_features: (N_total, node_feature_dim)
+            node_types: (N_total,) int64 node type indices
+            edge_index: (2, E_total) edge indices
+            edge_features: (E_total, edge_feature_dim)
+            batch: (N_total,) batch assignment vector
+        Returns:
+            (B, output_dim) graph-level embeddings
+        """
+        # Combine node features with type embeddings
+        type_emb = self.type_embedding(node_types)
+        x = torch.cat([node_features, type_emb], dim=1)
+        x = self.node_proj(x)
+
+        # Project edge features
+        if edge_features.shape[0] > 0:
+            edge_attr = self.edge_proj(edge_features)
+        else:
+            edge_attr = None
+
+        # GATv2Conv layers with residual connections
+        identity = x
+        x = self.conv1(x, edge_index, edge_attr=edge_attr)
+        x = self.norm1(x)
+        x = F.gelu(x)
+        x = self.dropout(x) + identity
+
+        identity = x
+        x = self.conv2(x, edge_index, edge_attr=edge_attr)
+        x = self.norm2(x)
+        x = F.gelu(x)
+        x = self.dropout(x) + identity
+
+        # Global pooling: mean || max
+        x_mean = global_mean_pool(x, batch)
+        x_max = global_max_pool(x, batch)
+        x_pool = torch.cat([x_mean, x_max], dim=1)
+
+        # Output projection
+        out = self.output_proj(x_pool)
+        return out
 
 
-# ---------------------------------------------------------------------------
-# CrossAttentionFusion — fusion of tabular + graph streams
-# ---------------------------------------------------------------------------
+# ─── Cross-Attention Fusion ──────────────────────────────────────────────────
 
 class CrossAttentionFusion(nn.Module):
-    """Cross-attention fusion block for combining tabular and graph embeddings.
+    """
+    Multi-head cross-attention layer that fuses tabular and graph embeddings.
 
-    Sub-modules (match state_dict key prefixes exactly):
-        tab_to_graph    — MultiheadAttention (tabular query → graph KV)
-        graph_to_tab    — MultiheadAttention (graph query → tabular KV)
-        norm1, norm2    — LayerNorm
-        fusion_mlp      — Sequential MLP
+    Tabular embedding attends to graph embedding and vice versa, then
+    the results are combined.
     """
 
-    def __init__(self, embed_dim: int = 64) -> None:
+    def __init__(self, embed_dim=64, n_heads=4, dropout=0.1):
         super().__init__()
-        self.tab_to_graph: nn.MultiheadAttention = nn.MultiheadAttention(
-            embed_dim, num_heads=4, batch_first=True
+
+        # Tabular attending to Graph
+        self.tab_to_graph = nn.MultiheadAttention(
+            embed_dim=embed_dim, num_heads=n_heads,
+            dropout=dropout, batch_first=True
         )
-        self.graph_to_tab: nn.MultiheadAttention = nn.MultiheadAttention(
-            embed_dim, num_heads=4, batch_first=True
+
+        # Graph attending to Tabular
+        self.graph_to_tab = nn.MultiheadAttention(
+            embed_dim=embed_dim, num_heads=n_heads,
+            dropout=dropout, batch_first=True
         )
-        self.norm1: nn.LayerNorm = nn.LayerNorm(embed_dim)
-        self.norm2: nn.LayerNorm = nn.LayerNorm(embed_dim)
-        self.fusion_mlp: nn.Sequential = nn.Sequential(
+
+        # Layer norms
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+
+        # Fusion MLP
+        self.fusion_mlp = nn.Sequential(
             nn.Linear(embed_dim * 2, embed_dim),
             nn.LayerNorm(embed_dim),
             nn.GELU(),
-            nn.Dropout(0.3),
+            nn.Dropout(dropout)
         )
 
-    def forward(  # pragma: no cover
-        self,
-        tab: torch.Tensor,
-        graph: torch.Tensor,
-    ) -> torch.Tensor:
-        return torch.cat([tab, graph], dim=-1)
+    def forward(self, tab_emb, graph_emb):
+        """
+        Args:
+            tab_emb: (B, D) tabular embeddings
+            graph_emb: (B, D) graph embeddings
+        Returns:
+            (B, D) fused embeddings
+        """
+        # Reshape for attention: (B, 1, D) — single "token" per modality
+        tab = tab_emb.unsqueeze(1)
+        graph = graph_emb.unsqueeze(1)
+
+        # Cross-attention
+        tab_attended, _ = self.tab_to_graph(tab, graph, graph)
+        graph_attended, _ = self.graph_to_tab(graph, tab, tab)
+
+        # Residual + norm
+        tab_out = self.norm1(tab + tab_attended).squeeze(1)
+        graph_out = self.norm2(graph + graph_attended).squeeze(1)
+
+        # Concatenate and fuse
+        fused = torch.cat([tab_out, graph_out], dim=1)
+        fused = self.fusion_mlp(fused)
+
+        return fused
 
 
-# ---------------------------------------------------------------------------
-# DeFiGuard — top-level model shell stored inside DeFiGuardPredictor
-# ---------------------------------------------------------------------------
+# ─── DeFiGuard Full Model ─────────────────────────────────────────────────
 
 class DeFiGuard(nn.Module):
-    """Full DeFi Guard neural network (tabular encoder + graph encoder + fusion + classifier).
+    """
+    DeFiGuard: Multi-Modal Graph-Enhanced DeFi Fraud Detector
 
-    This is the inner ``_model`` stored inside a ``DeFiGuardPredictor`` wrapper.
-    Sub-modules:
-        tabular_encoder     — TabularEncoder
-        graph_encoder       — GraphEncoder
-        fusion              — CrossAttentionFusion
-        classifier          — Sequential MLP head → sigmoid
-        projection          — Optional contrastive projection head
+    Combines:
+      - TabularEncoder for intrinsic transaction features
+      - GraphEncoder for ego-graph structural features
+      - CrossAttentionFusion for multi-modal integration
+      - Classification head for fraud detection
+      - Projection head for contrastive learning
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tabular_dim, node_feature_dim=8, edge_feature_dim=2,
+                 hidden_dim=128, embed_dim=64, n_heads=4,
+                 n_node_types=3, dropout=0.2):
         super().__init__()
-        self.tabular_encoder: TabularEncoder = TabularEncoder()
-        self.graph_encoder: GraphEncoder = GraphEncoder()
-        self.fusion: CrossAttentionFusion = CrossAttentionFusion()
-        self.classifier: nn.Sequential = nn.Sequential()
-        self.projection: nn.Sequential = nn.Sequential()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover
-        tab_emb = self.tabular_encoder(x)
-        return self.classifier(tab_emb)
+        # Encoders
+        self.tabular_encoder = TabularEncoder(
+            input_dim=tabular_dim,
+            hidden_dim=hidden_dim,
+            output_dim=embed_dim,
+            n_layers=3,
+            dropout=dropout
+        )
 
+        self.graph_encoder = GraphEncoder(
+            node_feature_dim=node_feature_dim,
+            edge_feature_dim=edge_feature_dim,
+            hidden_dim=hidden_dim,
+            output_dim=embed_dim,
+            n_heads=n_heads,
+            n_node_types=n_node_types,
+            dropout=dropout
+        )
 
-# ---------------------------------------------------------------------------
-# Internal stubs for GATConv-like layers
-# ---------------------------------------------------------------------------
+        # Fusion
+        self.fusion = CrossAttentionFusion(
+            embed_dim=embed_dim,
+            n_heads=n_heads,
+            dropout=dropout
+        )
 
-class _GATConvStub(nn.Module):
-    """Minimal stub for a GATConv-compatible layer (weight-receiving only)."""
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.LayerNorm(embed_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim // 2, 1)
+        )
 
-    def __init__(self, in_channels: int = 64, out_channels: int = 64) -> None:
-        super().__init__()
-        self.lin_l = nn.Linear(in_channels, out_channels, bias=True)
-        self.lin_r = nn.Linear(in_channels, out_channels, bias=False)
-        self.lin_edge = nn.Linear(in_channels, out_channels, bias=False)
-        self.att = nn.Parameter(torch.zeros(1, 1, out_channels * 2))
-        self.bias = nn.Parameter(torch.zeros(out_channels))
-        self.aggr_module = nn.Identity()
+        # Projection head for contrastive learning
+        self.projection = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim // 2)
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover
-        return self.lin_l(x)
+    def forward(self, tabular_features, node_features, node_types,
+                edge_index, edge_features, batch):
+        """
+        Args:
+            tabular_features: (B, tabular_dim)
+            node_features: (N_total, node_feature_dim)
+            node_types: (N_total,)
+            edge_index: (2, E_total)
+            edge_features: (E_total, edge_feature_dim)
+            batch: (N_total,) batch assignment
+        Returns:
+            logits: (B,) classification logits
+            embeddings: (B, embed_dim//2) contrastive embeddings
+        """
+        # Encode modalities
+        tab_emb = self.tabular_encoder(tabular_features)
+        graph_emb = self.graph_encoder(
+            node_features, node_types, edge_index, edge_features, batch
+        )
+
+        # Fuse
+        fused = self.fusion(tab_emb, graph_emb)
+
+        # Classify
+        logits = self.classifier(fused).squeeze(-1)
+
+        # Project for contrastive loss
+        embeddings = self.projection(fused)
+
+        return logits, embeddings
+
+    def get_fused_embedding(self, tabular_features, node_features, node_types,
+                            edge_index, edge_features, batch):
+        """Get fused embeddings without classification head (for analysis)."""
+        tab_emb = self.tabular_encoder(tabular_features)
+        graph_emb = self.graph_encoder(
+            node_features, node_types, edge_index, edge_features, batch
+        )
+        fused = self.fusion(tab_emb, graph_emb)
+        return fused

@@ -3,27 +3,24 @@
 inference_engine/api/main.py
 ==============================
 FastAPI application entry point for the Web3 Transaction Firewall inference
-engine — now powered by a **dual-model ensemble**.
+engine, powered by the **DeFiGuard** model (GATv2 graph encoder + tabular
+encoder with cross-attention fusion).
 
 Endpoints
 ---------
-POST /predict           Score a transaction using the Random Forest + DeFiGuard
-                        ensemble and return a detailed fraud verdict.
-POST /predict/explain   Same as /predict plus an automated risk explanation.
-POST /api/transactions/explain  Alias for /predict/explain.
-GET  /health            Liveness probe — reports the status of both models.
+POST /scan              Score a transaction from user-level parameters
+                        (server-side feature extraction → DeFiGuard → optional
+                        explanation). Used by the dashboard.
+POST /predict           Score a pre-extracted 20-feature vector.
+POST /predict/explain   /predict plus a risk explanation (response includes the
+                        prediction). Alias: POST /api/transactions/explain.
+POST /extract           Raw JSON-RPC transaction → 20-feature vector.
+GET  /health            Liveness / readiness — model status and threshold.
+GET  /stats             Live counters since startup.
 
-Ensemble model loading
-----------------------
-At startup the engine loads **two** models:
-1. **Random Forest** (required) — 200-tree sklearn classifier, 7 tabular
-   features. The server enters a 503 degraded state if this fails.
-2. **DeFiGuard** (optional) — a GNN + tabular fusion PyTorch neural network.
-   If the file is absent or PyTorch is not installed, the engine falls back
-   to RF-only mode automatically with a warning log.
-
-The active ensemble strategy is configured via ``ENSEMBLE_MODE`` (default
-``max`` — returns the higher of the two model scores for maximum recall).
+Scoring endpoints (/scan, /predict*, /extract) are rate limited per client IP
+(``RATE_LIMIT_PER_MINUTE``). If the model fails to load the server still starts
+so /health can report ``degraded``; scoring endpoints then return 503.
 
 Running
 -------
@@ -36,38 +33,31 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Dict
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from sklearn.ensemble import RandomForestClassifier
+from fastapi.responses import JSONResponse
 
-from inference_engine.api.dependencies import (
-    get_app_state,
-    get_defiguard_model,
-    get_model,
-    get_model_state,  # backward-compat alias
-)
+from feature_extractor.extractor import ExtractionError, extract_features
+from inference_engine.api.dependencies import get_app_state, get_defiguard_model
 from inference_engine.api.schemas import (
     ExtractionRequest,
     HealthResponse,
     PredictionResponse,
     RiskExplanationRequest,
     RiskExplanationResponse,
+    ScanRequest,
+    ScanResponse,
     StatsResponse,
     TransactionFeatures,
 )
-from inference_engine.core.config import settings
-from inference_engine.services.prediction import run_inference
+from inference_engine.core.config import obsolete_settings_in_use, settings
+from inference_engine.core.rate_limit import rate_limited
 from inference_engine.services.explainer import explain_transaction_risk
-
-# Feature extractor — imported lazily to avoid hard-fail if backend/ not on sys.path
-try:
-    from feature_extractor.extractor import extract_features, ExtractionError
-    _EXTRACTOR_AVAILABLE = True
-except ImportError:
-    _EXTRACTOR_AVAILABLE = False
-    ExtractionError = ValueError  # type: ignore[misc,assignment]
+from inference_engine.services.prediction import run_inference
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -77,42 +67,31 @@ logger = logging.getLogger("inference_engine")
 
 
 # --------------------------------------------------------------------------- #
-# Lifespan: both models are loaded here — once — before any requests are served.
+# Lifespan: the model is loaded once, before any requests are served.
 # --------------------------------------------------------------------------- #
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Load models on startup; clean up on shutdown."""
-    app_state = get_app_state()
-
-    # 1. Random Forest (required)
-    logger.info("Startup: loading Random Forest model from %s", settings.model_path)
-    try:
-        app_state.load(settings.model_path)
-        logger.info("Startup: RF ready. Fraud threshold: %.2f", settings.fraud_threshold)
-    except FileNotFoundError as exc:
-        logger.critical("STARTUP FAILED — RF model not found: %s", exc)
-        # Allow server to start so /health can report the issue,
-        # but /predict will return 503.
-
-    # 2. DeFiGuard (optional — non-fatal failure)
-    logger.info(
-        "Startup: loading DeFiGuard model from %s (optional)", settings.defiguard_model_path
-    )
-    app_state.load_defiguard(settings.defiguard_model_path)
-
-    if app_state.defiguard_loaded:
-        logger.info(
-            "Startup: ensemble mode = '%s' | RF + DeFiGuard both loaded.",
-            settings.ensemble_mode,
-        )
-    else:
+    """Load DeFiGuard on startup."""
+    obsolete = obsolete_settings_in_use()
+    if obsolete:
         logger.warning(
-            "Startup: DeFiGuard model NOT loaded — running RF-only mode. "
-            "Set DEFIGUARD_MODEL_PATH and ensure PyTorch is installed to enable the ensemble."
+            "Ignoring obsolete settings from the removed Random Forest ensemble: %s. "
+            "Remove them from your environment / .env.",
+            ", ".join(obsolete),
         )
 
+    logger.info("Startup: loading DeFiGuard model from %s", settings.defiguard_model_path)
+    try:
+        get_app_state().load_defiguard(settings.defiguard_model_path)
+        logger.info("Startup: ready. Fraud threshold: %.2f", settings.fraud_threshold)
+    except Exception as exc:  # noqa: BLE001 — start degraded so /health can report it
+        logger.critical(
+            "STARTUP DEGRADED — DeFiGuard model could not be loaded (%s: %s). "
+            "Scoring endpoints will return 503.",
+            type(exc).__name__,
+            exc,
+        )
     yield
-    # Shutdown: nothing to close for joblib / PyTorch CPU models.
     logger.info("Shutdown: inference engine stopped.")
 
 
@@ -120,16 +99,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # Application
 # --------------------------------------------------------------------------- #
 app = FastAPI(
-    title="Web3 Transaction Firewall — Dual-Model Ensemble Inference Engine",
+    title="Web3 Transaction Firewall — DeFiGuard Inference Engine",
     description=(
-        "Real-time fraud scoring API for Ethereum transactions. "
-        "Accepts a DeFiTransLyzer feature vector and returns a fraud verdict "
-        "from a **dual-model ensemble**: an AGA-optimised Random Forest classifier "
-        "combined with the DeFiGuard GNN + tabular fusion neural network. "
-        "The ensemble uses the ``max`` strategy by default (highest recall) — "
-        "configurable via the ``ENSEMBLE_MODE`` environment variable."
+        "Real-time fraud scoring API for Ethereum transactions. Scores a "
+        "DeFiTransLyzer feature vector with the DeFiGuard model (GATv2 graph "
+        "encoder + tabular encoder with cross-attention fusion). The block "
+        "threshold is configured via ``FRAUD_THRESHOLD``."
     ),
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -143,32 +120,112 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 with field locations and messages only. The rejected input is not
+    echoed back — it may be NaN/Infinity, which is not valid JSON."""
+    errors = [
+        {"loc": list(err.get("loc", ())), "msg": err.get("msg", ""), "type": err.get("type", "")}
+        for err in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
+def _dg_graph_context(tx_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Raw fields passed to DeFiGuard's ego-graph builder.
+
+    Sender/recipient address nodes are deliberately NOT included. DeFiGuard was
+    trained on receipt graphs that also carried token-holding nodes from a token
+    database that is unavailable for pending transactions; with address nodes
+    but no token nodes its score collapses to ~0.014 for every input (measured).
+    The address signals still reach the model through the tabular features
+    (length_to, is_same_address). The transaction-node graph is also the
+    configuration measured by scripts/evaluate_model.py.
+    """
+    return {k: tx_payload[k] for k in ("nonce", "logs") if k in tx_payload}
+
+
+def _scan_to_tx_payload(req: ScanRequest) -> Dict[str, Any]:
+    """Convert user-level scan parameters into a JSON-RPC style pending transaction."""
+    return {
+        "from": req.from_address.strip() or None,
+        "to": req.to_address.strip() or None,
+        "hash": req.tx_hash.strip() or None,
+        "value": int(round(req.value_eth * 1e18)),
+        "gas": req.gas_limit,
+        "gasPrice": int(round(req.gas_price_gwei * 1e9)),
+        "blockNumber": req.block_number,
+        "chainId": req.chain_id,
+        "nonce": req.nonce,
+        "logs": [{} for _ in range(req.log_count)],
+    }
+
+
+@app.post(
+    "/scan",
+    response_model=ScanResponse,
+    summary="Score a transaction from user-level parameters (extract → DeFiGuard → explain)",
+    tags=["Inference"],
+    dependencies=[Depends(rate_limited)],
+)
+async def scan(
+    request: ScanRequest,
+    model: Any = Depends(get_defiguard_model),
+) -> ScanResponse:
+    """Build a pending transaction from the given parameters, extract the
+    DeFiTransLyzer features server-side, score them with DeFiGuard and, when
+    ``explain`` is true, generate a risk explanation — rule-based unless
+    ``use_llm`` is true and a Groq key is configured.
+    """
+    tx_payload = _scan_to_tx_payload(request)
+    features = extract_features(tx_payload)
+    prediction = await run_inference(model, features, raw_tx=_dg_graph_context(tx_payload))
+    get_app_state().record_prediction(prediction.is_fraud, prediction.exec_time_ms)
+
+    explanation = None
+    if request.explain:
+        explanation = RiskExplanationResponse(
+            **await explain_transaction_risk(
+                features=features,
+                is_fraud=prediction.is_fraud,
+                fraud_probability=prediction.fraud_probability,
+                raw_from=tx_payload["from"],
+                raw_to=tx_payload["to"],
+                use_llm=request.use_llm,
+            )
+        )
+    return ScanResponse(features=features, prediction=prediction, explanation=explanation)
+
+
 @app.post(
     "/predict/explain",
     response_model=RiskExplanationResponse,
     summary="Score transaction + generate plain-language risk explanation",
     tags=["Inference"],
+    dependencies=[Depends(rate_limited)],
 )
 @app.post(
     "/api/transactions/explain",
     response_model=RiskExplanationResponse,
     summary="Score transaction + risk explanation (alias)",
     tags=["Inference"],
+    dependencies=[Depends(rate_limited)],
 )
 async def explain_risk(
     request: RiskExplanationRequest,
-    model: RandomForestClassifier = Depends(get_model),
-    defiguard_model: Optional[Any] = Depends(get_defiguard_model),
+    model: Any = Depends(get_defiguard_model),
 ) -> RiskExplanationResponse:
-    """Score transaction risk via the ensemble and generate a plain-language explanation."""
+    """Score transaction risk with DeFiGuard and generate a plain-language
+    explanation. The response includes the ``prediction`` it is based on."""
     features_dict = request.features.model_dump()
-    prediction = await run_inference(model, features_dict, defiguard_model=defiguard_model)
+    prediction = await run_inference(model, features_dict)
     get_app_state().record_prediction(prediction.is_fraud, prediction.exec_time_ms)
 
     explanation = await explain_transaction_risk(
@@ -178,33 +235,31 @@ async def explain_risk(
         raw_from=request.raw_from,
         raw_to=request.raw_to,
     )
-
-    return RiskExplanationResponse(**explanation)
+    return RiskExplanationResponse(**explanation, prediction=prediction)
 
 
 @app.post(
     "/predict",
     response_model=PredictionResponse,
-    summary="Score a transaction feature vector (ensemble)",
+    summary="Score a transaction feature vector",
     tags=["Inference"],
+    dependencies=[Depends(rate_limited)],
 )
 async def predict(
     features: TransactionFeatures,
-    model: RandomForestClassifier = Depends(get_model),
-    defiguard_model: Optional[Any] = Depends(get_defiguard_model),
+    model: Any = Depends(get_defiguard_model),
 ) -> PredictionResponse:
-    """Receive a pre-extracted DeFiTransLyzer feature vector and return the
-    ensemble fraud verdict:
+    """Receive a pre-extracted DeFiTransLyzer feature vector and return the verdict:
 
-    - **is_fraud**: `true` if the ensemble probability exceeds the configured threshold.
-    - **fraud_probability**: Best-of-both-models confidence score (0–1).
-    - **rf_score**: Raw Random Forest score.
-    - **defiguard_score**: Raw DeFiGuard neural-network score (null if not loaded).
-    - **ensemble_mode**: Active combination strategy (max | mean | weighted | rf_only).
-    - **primary_model**: Which model had the higher / decisive score.
-    - **exec_time_ms**: End-to-end ensemble inference latency in milliseconds.
+    - **is_fraud**: `true` if `fraud_probability` exceeds `threshold`.
+    - **fraud_probability**: DeFiGuard fraud probability (0–1).
+    - **threshold**: The configured block threshold.
+    - **exec_time_ms**: Inference latency in milliseconds.
+
+    DeFiGuard scores the features with a transaction-node ego-graph (see
+    ``_dg_graph_context``), exactly as for **/scan**.
     """
-    result = await run_inference(model, features.model_dump(), defiguard_model=defiguard_model)
+    result = await run_inference(model, features.model_dump())
     get_app_state().record_prediction(result.is_fraud, result.exec_time_ms)
     return result
 
@@ -216,22 +271,13 @@ async def predict(
     tags=["Operations"],
 )
 async def health() -> HealthResponse:
-    """Return the current health status of the inference engine including both models."""
+    """Return the current health status of the inference engine."""
     state = get_app_state()
-    is_ready = state.is_loaded or (state.model is not None)
-
-    # Determine active ensemble mode for display
-    active_mode = settings.ensemble_mode
-    if not state.defiguard_loaded:
-        active_mode = "rf_only"
-
     return HealthResponse(
-        status="ok" if is_ready else "degraded",
-        model_loaded=is_ready,
-        model_path=state.model_path,
-        defiguard_loaded=state.defiguard_loaded,
-        defiguard_model_path=state.defiguard_model_path,
-        ensemble_mode=active_mode,
+        status="ok" if state.defiguard_loaded else "degraded",
+        model_loaded=state.defiguard_loaded,
+        model_path=state.defiguard_model_path,
+        fraud_threshold=settings.fraud_threshold,
     )
 
 
@@ -243,49 +289,34 @@ async def health() -> HealthResponse:
 )
 async def stats() -> StatsResponse:
     """Return live counters: total predictions, fraud count, avg latency, uptime."""
-    import datetime as _dt
     state = get_app_state()
     n = state.total_predictions
     fraud_rate = (state.total_fraud / n * 100) if n > 0 else 0.0
     avg_latency = (state.sum_latency_ms / n) if n > 0 else 0.0
-    uptime = (_dt.datetime.now(_dt.timezone.utc) - state.started_at).total_seconds()
-    active_mode = settings.ensemble_mode if state.defiguard_loaded else "rf_only"
+    uptime = (datetime.now(timezone.utc) - state.started_at).total_seconds()
     return StatsResponse(
         total_predictions=n,
         total_fraud=state.total_fraud,
         fraud_rate_pct=round(fraud_rate, 2),
         avg_latency_ms=round(avg_latency, 3),
         uptime_seconds=round(uptime, 1),
-        ensemble_mode=active_mode,
     )
 
 
 @app.post(
     "/extract",
-    response_model=dict,
+    response_model=Dict[str, float],
     summary="Extract DeFiTransLyzer features from a raw Ethereum transaction",
     tags=["Inference"],
+    dependencies=[Depends(rate_limited)],
 )
-async def extract(request: ExtractionRequest) -> dict:
+async def extract(request: ExtractionRequest) -> Dict[str, float]:
     """Convert a raw JSON-RPC Ethereum transaction payload into the 20-feature
-    DeFiTransLyzer vector consumed by /predict. Useful for testing the full
-    pipeline from raw on-chain data.
-
-    Raises 422 if the payload is malformed, 503 if the extractor module is
-    unavailable (e.g. backend/ not on sys.path).
-    """
-    if not _EXTRACTOR_AVAILABLE:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=503,
-            detail="Feature extractor module unavailable. Ensure backend/ is on PYTHONPATH.",
-        )
+    DeFiTransLyzer vector consumed by /predict. Raises 422 if malformed."""
     try:
-        features = extract_features(request.tx_payload)
+        return extract_features(request.tx_payload)
     except ExtractionError as exc:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return features
 
 
 # --------------------------------------------------------------------------- #

@@ -2,20 +2,22 @@
 """
 inference_engine/services/explainer.py
 ========================================
-Automated risk explanation service for the Web3 Transaction Firewall.
+Risk explanation service for the Web3 Transaction Firewall.
 
-Gathers structured transaction risk signals, redacts sensitive address data,
-and generates human-readable risk explanations via LLM (or rule-based fallback).
+Turns the DeFiGuard verdict plus the transaction's feature signals into a
+human-readable explanation. The **risk level is always derived from the model
+verdict** (``is_fraud`` + ``FRAUD_THRESHOLD``) so the explanation can never
+contradict the BLOCKED / SAFE decision; an LLM (Groq, optional) only writes
+the reasons and recommendation text. Without a key, when the LLM budget is
+exhausted, or when the LLM returns anything malformed, a deterministic
+rule-based explainer is used instead.
 
-LLM Provider: Groq (free tier) using Llama 3 model.
-Get your free API key at: https://console.groq.com/keys
-
-Response Schema
+Response schema
 ---------------
 {
   "risk_level": "low" | "medium" | "high",
-  "reasons": ["Reason bullet 1", "Reason bullet 2", ...],
-  "recommendation": "Actionable security recommendation string",
+  "reasons": ["Reason bullet 1", ...],
+  "recommendation": "Actionable recommendation",
   "exec_time_ms": float,
   "is_fallback": bool
 }
@@ -24,15 +26,31 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from inference_engine.core.config import settings
+from inference_engine.core.rate_limit import RateLimiter
 
 logger = logging.getLogger(__name__)
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_TIMEOUT_S = 8.0
+MAX_REASONS = 6
+MAX_TEXT_LEN = 500
+
+#: Probability from which a non-blocked transaction is reported as "medium".
+MEDIUM_RISK_FLOOR = 0.5
+
+#: Transport override for the Groq HTTP client (tests inject httpx.MockTransport).
+_groq_transport: Optional[httpx.AsyncBaseTransport] = None
+
+
+#: Process-wide LLM call budget (single key).
+_llm_budget = RateLimiter()
 
 
 def mask_address(address: Optional[str]) -> str:
@@ -45,6 +63,23 @@ def mask_address(address: Optional[str]) -> str:
     return f"{address[:6]}...{address[-4:]}"
 
 
+def risk_level_for(is_fraud: bool, fraud_probability: float) -> str:
+    """Risk band consistent with the model verdict."""
+    if is_fraud:
+        return "high"
+    if fraud_probability >= min(MEDIUM_RISK_FLOOR, settings.fraud_threshold):
+        return "medium"
+    return "low"
+
+
+def _recommendation_for(risk_level: str) -> str:
+    if risk_level == "high":
+        return "CRITICAL: Do NOT sign or confirm this transaction. High probability of DeFi exploit or financial loss."
+    if risk_level == "medium":
+        return "WARNING: Verify contract permissions and target address carefully before proceeding."
+    return "Transaction appears safe. Normal baseline parameters detected."
+
+
 def _build_rule_fallback_explanation(
     features: Dict[str, float],
     is_fraud: bool,
@@ -55,153 +90,124 @@ def _build_rule_fallback_explanation(
     """Generate structured, deterministic risk explanations based on feature signals."""
     reasons: List[str] = []
 
-    gas_price_ratio = features.get("gas_price_ratio", 1.0)
     effective_gas_price_gwei = features.get("effective_gas_price", 0.0) / 1e9
     value_eth = features.get("value", 0.0) / 1e18
     is_same_addr = features.get("is_same_address", 0.0) > 0.5
     gas_used = features.get("gas_used", 21000.0)
     log_removed = features.get("log_removed", 0.0) > 0.5
 
-    # Determine risk level (aligned with FRAUD_THRESHOLD=0.65)
-    if is_fraud or fraud_probability >= 0.65:
-        risk_level = "high"
-    elif fraud_probability >= 0.50:
-        risk_level = "medium"
-    else:
-        risk_level = "low"
+    risk_level = risk_level_for(is_fraud, fraud_probability)
 
-    # Analyze specific risk signals
-    if gas_price_ratio > 3.0:
+    # Absolute gas price heuristics (no live base fee is available to compare against).
+    if effective_gas_price_gwei > 100:
         reasons.append(
-            f"Gas price ratio ({gas_price_ratio:.1f}x baseline) is significantly elevated ({effective_gas_price_gwei:.0f} Gwei), "
-            "suggesting potential front-running or transaction prioritization manipulation."
+            f"Gas price ({effective_gas_price_gwei:.0f} Gwei) is unusually high, a pattern associated with "
+            "front-running or urgent drainer transactions."
         )
-    elif gas_price_ratio > 1.8:
-        reasons.append(
-            f"Gas price ({effective_gas_price_gwei:.0f} Gwei) is higher than network average."
-        )
+    elif effective_gas_price_gwei > 50:
+        reasons.append(f"Gas price ({effective_gas_price_gwei:.0f} Gwei) is elevated.")
 
     if value_eth > 10.0:
-        reasons.append(
-            f"High ETH transfer volume ({value_eth:.2f} ETH) increases financial risk footprint."
-        )
+        reasons.append(f"High ETH transfer volume ({value_eth:.2f} ETH) increases financial risk footprint.")
 
     if is_same_addr:
-        masked_from = mask_address(raw_from or "0xSame")
         reasons.append(
-            f"Self-transfer detected (Sender and Recipient address match: {masked_from})."
+            f"Self-transfer detected (sender and recipient address match: {mask_address(raw_from)})."
         )
 
     if log_removed:
-        reasons.append(
-            "Event logs indicate previous blockchain state reorganisation or log removal flag."
-        )
+        reasons.append("Event logs indicate a blockchain reorganisation or log removal flag.")
 
     if gas_used > 300_000:
         reasons.append(
             f"High gas consumption ({gas_used:,.0f} units) indicates complex contract execution logic."
         )
 
-    # Low risk default reason
     if not reasons and risk_level == "low":
         reasons.append(
             "Transaction parameters (gas price, execution complexity, transfer value) are within normal baseline thresholds."
         )
     elif not reasons:
         reasons.append(
-            f"Random Forest fraud probability score ({fraud_probability * 100:.1f}%) exceeds safety baseline."
-        )
-
-    # Recommendation
-    if risk_level == "high":
-        recommendation = (
-            "CRITICAL: Do NOT sign or confirm this transaction. High probability of DeFi exploit or financial loss."
-        )
-    elif risk_level == "medium":
-        recommendation = (
-            "WARNING: Verify contract permissions and target address carefully before proceeding."
-        )
-    else:
-        recommendation = (
-            "Transaction appears safe. Normal baseline parameters detected."
+            f"Fraud probability ({fraud_probability * 100:.1f}%) is elevated; no single heuristic "
+            "signal explains it — the models flagged the overall feature pattern."
         )
 
     return {
         "risk_level": risk_level,
         "reasons": reasons,
-        "recommendation": recommendation,
+        "recommendation": _recommendation_for(risk_level),
         "is_fallback": True,
     }
 
 
+def _validate_llm_payload(parsed: Any) -> Optional[Dict[str, Any]]:
+    """Return {reasons, recommendation} if the LLM JSON is well-formed, else None."""
+    if not isinstance(parsed, dict):
+        return None
+    reasons = parsed.get("reasons")
+    recommendation = parsed.get("recommendation")
+    if not isinstance(reasons, list) or not isinstance(recommendation, str):
+        return None
+    reasons = [r.strip()[:MAX_TEXT_LEN] for r in reasons if isinstance(r, str) and r.strip()]
+    recommendation = recommendation.strip()[:MAX_TEXT_LEN]
+    if not reasons or not recommendation:
+        return None
+    return {"reasons": reasons[:MAX_REASONS], "recommendation": recommendation}
+
+
 async def _call_groq_explainer(
     features: Dict[str, float],
+    is_fraud: bool,
     fraud_probability: float,
+    risk_level: str,
     raw_from: Optional[str] = None,
     raw_to: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Call Groq API (Llama 3.3 70B) to generate JSON risk explanation.
-
-    Groq provides free-tier access with very fast inference (~200ms).
-    Get a free API key at: https://console.groq.com/keys
-    """
-    api_key = settings.groq_api_key or os.getenv("GROQ_API_KEY", "")
+    """Ask Groq for reasons + recommendation; None on any failure or when disabled."""
+    api_key = settings.groq_api_key
     if not api_key:
         return None
+    allowed, _ = _llm_budget.hit("groq", settings.llm_max_calls_per_minute)
+    if not allowed:
+        logger.info("LLM call budget exhausted — using rule-based explanation.")
+        return None
 
-    masked_from = mask_address(raw_from)
-    masked_to = mask_address(raw_to)
     value_eth = features.get("value", 0.0) / 1e18
-    gas_price_ratio = features.get("gas_price_ratio", 1.0)
-    gas_used = features.get("gas_used", 21000.0)
-    gas_efficiency = features.get("gas_efficiency", 0.7)
-    is_same_address = features.get("is_same_address", 0.0) > 0.5
-    effective_gas_price_gwei = features.get("effective_gas_price", 0.0) / 1e9
-
     system_prompt = (
         "You are an expert Web3 DeFi fraud security analyst working for a real-time transaction firewall. "
-        "Analyze the provided Ethereum transaction feature signals from our Random Forest ML model "
-        "and return ONLY a valid JSON object with no Markdown framing, code fences, or preamble.\n\n"
-        "The JSON MUST match this exact schema:\n"
-        "{\n"
-        '  "risk_level": "low" | "medium" | "high",\n'
-        '  "reasons": ["detailed plain-language reason 1", "detailed plain-language reason 2", "reason 3"],\n'
-        '  "recommendation": "clear, actionable security recommendation for the wallet owner"\n'
-        "}\n\n"
+        "The firewall's DeFiGuard model has ALREADY decided the verdict; explain it, do not contradict it. "
+        "Return ONLY a valid JSON object with no Markdown, code fences, or preamble, matching:\n"
+        '{"reasons": ["reason 1", "reason 2", "reason 3"], '
+        '"recommendation": "clear, actionable recommendation for the wallet owner"}\n\n'
         "Guidelines:\n"
-        "- Provide 2-4 specific, technical reasons explaining WHY the transaction is risky or safe.\n"
-        "- Reference the actual feature values (gas price, self-transfer flag, etc.) in your reasons.\n"
-        "- The recommendation must be actionable (e.g., 'Do NOT sign', 'Verify contract source', 'Safe to proceed').\n"
-        "- Do NOT include full raw addresses or PII.\n"
-        "- Do NOT wrap the JSON in markdown code fences."
+        "- Provide 2-4 specific, technical reasons referencing the actual feature values.\n"
+        "- The recommendation must be consistent with the verdict "
+        "(BLOCKED: do not sign; SAFE: proceeding is reasonable, with normal caution).\n"
+        "- Do NOT include full addresses or other PII."
     )
-
     user_content = (
-        f"Ethereum Transaction Risk Analysis:\n"
-        f"──────────────────────────────────\n"
-        f"ML Model Fraud Probability: {fraud_probability * 100:.1f}%\n"
-        f"From Address: {masked_from}\n"
-        f"To Address: {masked_to}\n"
+        "Ethereum Transaction Risk Analysis:\n"
+        f"Verdict: {'BLOCKED' if is_fraud else 'SAFE'} (risk level: {risk_level})\n"
+        f"Model Fraud Probability: {fraud_probability * 100:.1f}% "
+        f"(block threshold {settings.fraud_threshold * 100:.0f}%)\n"
+        f"From Address: {mask_address(raw_from)}\n"
+        f"To Address: {mask_address(raw_to)}\n"
         f"Transfer Amount: {value_eth:.6f} ETH\n"
-        f"Gas Price Ratio (vs base fee): {gas_price_ratio:.2f}x\n"
-        f"Effective Gas Price: {effective_gas_price_gwei:.1f} Gwei\n"
-        f"Gas Used: {gas_used:,.0f} units\n"
-        f"Gas Efficiency (used/limit): {gas_efficiency:.2f}\n"
-        f"Self-Transfer (from == to): {is_same_address}\n"
-        f"──────────────────────────────────\n"
-        f"Provide your expert security analysis as JSON."
+        f"Effective Gas Price: {features.get('effective_gas_price', 0.0) / 1e9:.1f} Gwei\n"
+        f"Gas Used: {features.get('gas_used', 0.0):,.0f} units\n"
+        f"Gas Efficiency (used/limit): {features.get('gas_efficiency', 0.0):.2f}\n"
+        f"Self-Transfer (from == to): {features.get('is_same_address', 0.0) > 0.5}\n"
+        f"Log Events: {features.get('log_count', 0.0):.0f}\n"
     )
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=GROQ_TIMEOUT_S, transport=_groq_transport) as client:
             resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
-                    "model": "llama-3.3-70b-versatile",
+                    "model": GROQ_MODEL,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content},
@@ -211,40 +217,19 @@ async def _call_groq_explainer(
                     "response_format": {"type": "json_object"},
                 },
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                text_content = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
-                # Strip potential markdown code fences
-                text_content = text_content.strip()
-                if text_content.startswith("```"):
-                    text_content = text_content.split("\n", 1)[-1]
-                if text_content.endswith("```"):
-                    text_content = text_content.rsplit("```", 1)[0]
-                text_content = text_content.strip()
-
-                parsed = json.loads(text_content)
-                # Validate required fields
-                if "risk_level" in parsed and "reasons" in parsed and "recommendation" in parsed:
-                    parsed["is_fallback"] = False
-                    return parsed
-                else:
-                    logger.warning("Groq response missing required fields: %s", parsed.keys())
-            else:
-                logger.warning(
-                    "Groq API returned status %d: %s",
-                    resp.status_code,
-                    resp.text[:200],
-                )
-    except json.JSONDecodeError as exc:
-        logger.warning("Failed to parse Groq JSON response: %s", exc)
-    except Exception as exc:
-        logger.warning("Groq explanation request failed or timed out: %s", exc)
-
-    return None
+        if resp.status_code != 200:
+            logger.warning("Groq API returned status %d: %s", resp.status_code, resp.text[:200])
+            return None
+        text = resp.json()["choices"][0]["message"]["content"].strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        validated = _validate_llm_payload(json.loads(text))
+        if validated is None:
+            logger.warning("Groq response did not match the expected schema — using fallback.")
+        return validated
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError) as exc:
+        logger.warning("Groq explanation failed (%s: %s) — using fallback.", type(exc).__name__, exc)
+        return None
 
 
 async def explain_transaction_risk(
@@ -253,23 +238,26 @@ async def explain_transaction_risk(
     fraud_probability: float,
     raw_from: Optional[str] = None,
     raw_to: Optional[str] = None,
+    use_llm: bool = True,
 ) -> Dict[str, Any]:
-    """Generate structured risk explanation for a transaction vector.
+    """Generate a structured risk explanation for a scored transaction.
 
-    Tries Groq LLM first (if GROQ_API_KEY is set), seamlessly falling back
-    to the deterministic rule-based explainer.
+    Tries the Groq LLM first (if enabled and configured), falling back to the
+    deterministic rule-based explainer.
     """
     t0 = time.perf_counter()
+    risk_level = risk_level_for(is_fraud, fraud_probability)
 
-    # 1. Try Groq LLM if configured
-    llm_result = await _call_groq_explainer(features, fraud_probability, raw_from, raw_to)
-    if llm_result:
-        llm_result["exec_time_ms"] = round((time.perf_counter() - t0) * 1000, 2)
-        return llm_result
+    if use_llm:
+        llm = await _call_groq_explainer(features, is_fraud, fraud_probability, risk_level, raw_from, raw_to)
+        if llm is not None:
+            return {
+                "risk_level": risk_level,
+                **llm,
+                "is_fallback": False,
+                "exec_time_ms": round((time.perf_counter() - t0) * 1000, 2),
+            }
 
-    # 2. Deterministic Rule-Based Fallback
-    fallback_result = _build_rule_fallback_explanation(
-        features, is_fraud, fraud_probability, raw_from, raw_to
-    )
-    fallback_result["exec_time_ms"] = round((time.perf_counter() - t0) * 1000, 2)
-    return fallback_result
+    result = _build_rule_fallback_explanation(features, is_fraud, fraud_probability, raw_from, raw_to)
+    result["exec_time_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+    return result

@@ -5,7 +5,7 @@ import { HelpCircle, ChevronDown } from 'lucide-react';
 const faqs = [
   {
     q: 'How does DeFiShield work?',
-    a: 'DeFiShield intercepts transactions before they are broadcast to the blockchain. It extracts 20 on-chain features using our DeFiTransLyzer pipeline, then evaluates them through a dual-model ensemble (Random Forest classifier and DeFiGuard neural network). The entire evaluation completes in milliseconds, providing a calibrated risk score and transparent explainability breakdown.',
+    a: 'DeFiShield intercepts transactions before they are broadcast to the blockchain. It extracts 20 on-chain features using our DeFiTransLyzer pipeline, then evaluates them with the DeFiGuard graph neural network. The entire evaluation completes in milliseconds, providing a fraud probability and a plain-language explanation of the verdict.',
   },
   {
     q: 'Can it detect new, unseen scams?',
@@ -17,7 +17,7 @@ const faqs = [
   },
   {
     q: 'Is DeFiShield open source?',
-    a: 'Yes. The full codebase — including the React frontend dashboard, FastAPI dual-model inference service, feature extraction pipeline, and test suite — is fully open source on GitHub.',
+    a: 'Yes. The full codebase — including the React frontend dashboard, FastAPI DeFiGuard inference service, feature extraction pipeline, and test suite — is fully open source on GitHub.',
   },
   {
     q: 'Which blockchains are supported?',

@@ -12,8 +12,12 @@ safe median-imputed default used during training preprocessing.
 """
 from __future__ import annotations
 
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Dict, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+#: Upper bound for address / hash strings accepted from clients.
+MAX_ID_LENGTH = 100
 
 
 class TransactionFeatures(BaseModel):
@@ -22,7 +26,7 @@ class TransactionFeatures(BaseModel):
     All fields are optional at the HTTP level (default 0.0) so that callers
     that cannot derive every metric still receive a prediction rather than a
     validation error — partial feature vectors are preferable to dropped
-    requests in a live firewall.
+    requests in a live firewall. NaN and ±Infinity are rejected.
     """
 
     # -- Identity / structural --------------------------------------------- #
@@ -58,7 +62,8 @@ class TransactionFeatures(BaseModel):
         default=0.0, ge=0.0, description="Gas actually consumed by this transaction."
     )
     gas_efficiency: float = Field(
-        default=0.0, description="gas_used / gas_limit ratio."
+        default=0.0, ge=0.0,
+        description="cumulative_gas_used / gas_used (DeFiTransLyzer definition; 0 when unknown).",
     )
     effective_gas_price: float = Field(
         default=0.0, ge=0.0, description="Effective gas price paid (wei)."
@@ -67,10 +72,11 @@ class TransactionFeatures(BaseModel):
         default=0.0, ge=0.0, description="gas_used × effective_gas_price (wei)."
     )
     gas_price_ratio: float = Field(
-        default=0.0, ge=0.0, description="effective_gas_price / base_fee_per_gas."
+        default=1.0, ge=0.0,
+        description="Paid ÷ offered gas price; 1.0 for pending transactions (as in training).",
     )
     gas_per_log_event: float = Field(
-        default=0.0, ge=0.0, description="gas_used / (log_count + 1)."
+        default=0.0, ge=0.0, description="Constant 0 in the training data."
     )
 
     # -- Value -------------------------------------------------------------- #
@@ -78,24 +84,24 @@ class TransactionFeatures(BaseModel):
         default=0.0, ge=0.0, description="ETH value transferred (wei)."
     )
     normalized_token_transfer: float = Field(
-        default=0.0, description="Normalised transfer value."
+        default=0.0, ge=0.0, le=1.0, description="Constant 0 in the training data."
     )
 
     # -- Log / event activity ----------------------------------------------- #
     log_count: float = Field(
-        default=0.0, ge=0.0, description="Raw number of log entries emitted."
+        default=0.0, ge=0.0, description="Constant 0 in the training data (see length_log)."
     )
     log_removed: float = Field(
         default=0.0, ge=0.0, le=1.0, description="1.0 if any logs were removed (reorg flag)."
     )
     length_log: float = Field(
-        default=0.0, ge=0.0, description="log(log_count + 1) — estimated event generation."
+        default=0.0, ge=0.0, description="Number of log entries emitted (DeFiTransLyzer definition)."
     )
     event_activity_flag: float = Field(
         default=0.0, ge=0.0, le=1.0, description="1.0 if the transaction emitted any logs."
     )
 
-    model_config = {"json_schema_extra": {
+    model_config = ConfigDict(allow_inf_nan=False, json_schema_extra={
         "example": {
             "length_transaction_hash": 66,
             "length_to": 42,
@@ -106,93 +112,58 @@ class TransactionFeatures(BaseModel):
             "total_gas_cost": 4_200_000_000_000,
             "effective_gas_price": 200_000_000_000,
             "cumulative_gas_used": 500_000,
-            "gas_price_ratio": 2.5,
-            "length_log": 0.693,
+            "gas_price_ratio": 1.0,
+            "length_log": 0,
             "value": 1_000_000_000_000_000_000,
         }
-    }}
+    })
 
 
 class PredictionResponse(BaseModel):
-    """Inference result returned by the /predict endpoint.
+    """DeFiGuard verdict returned by /predict, /scan and /predict/explain."""
 
-    The ``fraud_probability`` is the **ensemble** score — the best prediction
-    from both the Random Forest and DeFiGuard models according to the active
-    ensemble strategy (default: ``max`` of both scores).
-    """
-
-    is_fraud: bool = Field(
-        description="True if the ensemble fraud probability exceeds the configured threshold."
-    )
-    fraud_probability: float = Field(
-        ge=0.0,
-        le=1.0,
-        description="Ensemble fraud confidence score (0–1). Best-of-both-models result.",
-    )
-    exec_time_ms: float = Field(
-        ge=0.0, description="End-to-end ensemble inference latency in milliseconds."
-    )
-
-    # ----- Per-model breakdown ----- #
-    rf_score: float = Field(
-        ge=0.0,
-        le=1.0,
-        default=0.0,
-        description="Raw Random Forest fraud probability score.",
-    )
-    defiguard_score: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="Raw DeFiGuard neural-network fraud probability score (None if model not loaded).",
-    )
-    ensemble_mode: str = Field(
-        default="rf_only",
-        description="Active ensemble combination strategy: max | mean | weighted | rf_only | dg_only.",
-    )
-    primary_model: str = Field(
-        default="random_forest",
-        description="Which model contributed the decisive (highest) score.",
-    )
+    is_fraud: bool = Field(description="True if fraud_probability exceeds the threshold.")
+    fraud_probability: float = Field(ge=0.0, le=1.0, description="DeFiGuard fraud probability (0–1).")
+    threshold: float = Field(description="Block threshold applied (FRAUD_THRESHOLD).")
+    model: Literal["defiguard"] = Field(default="defiguard", description="Model that produced the score.")
+    exec_time_ms: float = Field(ge=0.0, description="Inference latency in milliseconds.")
 
 
 class HealthResponse(BaseModel):
     """Response body for the /health liveness probe."""
 
-    status: str
-    model_loaded: bool
-    model_path: str
-    defiguard_loaded: bool = Field(
-        default=False,
-        description="True if the DeFiGuard model is loaded and contributing to ensemble scoring.",
-    )
-    defiguard_model_path: str = Field(
-        default="",
-        description="Resolved path to the loaded DeFiGuard model file.",
-    )
-    ensemble_mode: str = Field(
-        default="rf_only",
-        description="Active ensemble strategy.",
-    )
+    status: Literal["ok", "degraded"]
+    model_loaded: bool = Field(description="True if the DeFiGuard model is loaded.")
+    model_path: str = Field(default="", description="Resolved path of the loaded model file.")
+    fraud_threshold: float = Field(description="Probability above which a transaction is blocked.")
 
 
 class RiskExplanationRequest(BaseModel):
     """Payload sent to POST /predict/explain or POST /api/transactions/explain."""
 
     features: TransactionFeatures = Field(default_factory=TransactionFeatures)
-    raw_from: Optional[str] = Field(default=None, description="Optional raw sender address for PII masking.")
-    raw_to: Optional[str] = Field(default=None, description="Optional raw recipient address for PII masking.")
-    amount_eth: Optional[float] = Field(default=None, description="Optional ETH amount transferred.")
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    raw_from: Optional[str] = Field(
+        default=None, max_length=MAX_ID_LENGTH, description="Optional raw sender address (masked before use)."
+    )
+    raw_to: Optional[str] = Field(
+        default=None, max_length=MAX_ID_LENGTH, description="Optional raw recipient address (masked before use)."
+    )
+    amount_eth: Optional[float] = Field(default=None, ge=0.0, description="Optional ETH amount transferred.")
 
 
 class RiskExplanationResponse(BaseModel):
     """Structured AI risk explanation result."""
 
-    risk_level: str = Field(description="'low' | 'medium' | 'high'")
-    reasons: list[str] = Field(description="Bullet points explaining why the transaction is flagged.")
+    risk_level: Literal["low", "medium", "high"]
+    reasons: list[str] = Field(min_length=1, description="Bullet points explaining the verdict.")
     recommendation: str = Field(description="Actionable security recommendation for the user.")
     exec_time_ms: float = Field(ge=0.0, description="Latency of the explainer engine in ms.")
     is_fallback: bool = Field(default=True, description="True if generated by rule fallback engine.")
+    prediction: Optional[PredictionResponse] = Field(
+        default=None, description="The prediction the explanation is based on."
+    )
 
 
 # Ensure Pydantic v2 type adapter resolves nested schemas under 'from __future__ import annotations'
@@ -208,9 +179,8 @@ class StatsResponse(BaseModel):
     fraud_rate_pct: float = Field(
         ge=0.0, le=100.0, description="Fraud rate as a percentage of all predictions."
     )
-    avg_latency_ms: float = Field(ge=0.0, description="Average ensemble inference latency (ms).")
+    avg_latency_ms: float = Field(ge=0.0, description="Average inference latency (ms).")
     uptime_seconds: float = Field(ge=0.0, description="Seconds since the engine started.")
-    ensemble_mode: str = Field(description="Currently active ensemble mode.")
 
 
 class ExtractionRequest(BaseModel):
@@ -222,3 +192,39 @@ class ExtractionRequest(BaseModel):
             "Accepts eth_sendTransaction, eth_getTransactionReceipt, or mixed formats."
         )
     )
+
+
+class ScanRequest(BaseModel):
+    """User-level transaction parameters for POST /scan.
+
+    The server converts these into a JSON-RPC style transaction, extracts the
+    DeFiTransLyzer features (``feature_extractor``), scores them and optionally
+    explains the verdict — so feature engineering lives in one place.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False, populate_by_name=True)
+
+    from_address: str = Field(default="", max_length=MAX_ID_LENGTH, alias="from")
+    to_address: str = Field(default="", max_length=MAX_ID_LENGTH, alias="to")
+    value_eth: float = Field(default=0.0, ge=0.0, le=1e9, description="Amount transferred (ETH).")
+    gas_price_gwei: float = Field(gt=0.0, le=1e6, description="Gas price / max fee (Gwei).")
+    gas_limit: int = Field(default=21_000, gt=0, le=100_000_000, description="Gas limit (units).")
+    block_number: int = Field(default=0, ge=0, le=10**10)
+    tx_hash: str = Field(default="", max_length=MAX_ID_LENGTH)
+    log_count: int = Field(default=0, ge=0, le=10_000)
+    chain_id: int = Field(default=1, ge=0, le=2**32)
+    nonce: int = Field(default=0, ge=0, le=10**12)
+    explain: bool = Field(default=True, description="Also generate a risk explanation.")
+    use_llm: bool = Field(
+        default=False, description="Let the explanation use the Groq LLM (if configured); otherwise rule-based."
+    )
+
+
+class ScanResponse(BaseModel):
+    """Extracted features, prediction and optional explanation."""
+
+    features: Dict[str, float]
+    prediction: PredictionResponse
+    explanation: Optional[RiskExplanationResponse] = None
+ScanRequest.model_rebuild()
+ScanResponse.model_rebuild()

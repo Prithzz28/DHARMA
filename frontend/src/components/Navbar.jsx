@@ -18,8 +18,6 @@ export default function Navbar() {
   const [healthStatus, setHealthStatus] = useState({
     online: false,
     modelLoaded: false,
-    defiguardLoaded: false,
-    ensembleMode: 'max',
   });
 
   useEffect(() => {
@@ -38,14 +36,12 @@ export default function Navbar() {
         if (isMounted) {
           setHealthStatus({
             online: res.status === 'ok',
-            modelLoaded: res.model_loaded,
-            defiguardLoaded: Boolean(res.defiguard_loaded),
-            ensembleMode: res.ensemble_mode || 'max',
+            modelLoaded: Boolean(res.model_loaded),
           });
         }
       } catch {
         if (isMounted) {
-          setHealthStatus({ online: false, modelLoaded: false, defiguardLoaded: false, ensembleMode: 'max' });
+          setHealthStatus({ online: false, modelLoaded: false });
         }
       }
     };
@@ -70,7 +66,7 @@ export default function Navbar() {
       }`}
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16 lg:h-18">
+        <div className="flex items-center justify-between h-16 lg:h-[72px]">
           {/* Logo & Backend Health */}
           <div className="flex items-center gap-4">
             <motion.a

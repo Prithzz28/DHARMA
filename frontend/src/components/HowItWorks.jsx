@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { motion, useInView } from 'framer-motion';
 import { Pen, Wifi, Cpu, Brain, BarChart3, CheckCircle } from 'lucide-react';
+import { modelMetrics, pct } from '../data/modelMetrics';
 
 const steps = [
   {
@@ -26,8 +27,8 @@ const steps = [
   },
   {
     icon: Brain,
-    title: 'ML Ensemble Risk Analysis',
-    description: 'The dual-model ensemble evaluates features across Random Forest and neural network models in milliseconds.',
+    title: 'GNN Risk Analysis',
+    description: 'The DeFiGuard graph neural network evaluates the transaction features in milliseconds.',
     color: 'from-purple-500 to-violet-500',
     step: '04',
   },
@@ -144,7 +145,8 @@ export default function HowItWorks() {
             transition={{ delay: 0.2 }}
             className="text-gray-400 text-lg max-w-2xl mx-auto"
           >
-            A six-step pipeline from transaction signing to safe execution — all happening in under 100ms.
+            A six-step pipeline from transaction signing to safe execution — the model itself scores a
+            transaction in {modelMetrics.latencyMedianMs.toFixed(1)} ms (median).
           </motion.p>
         </div>
 
@@ -163,10 +165,10 @@ export default function HowItWorks() {
           className="mt-20 glass-card rounded-2xl p-6 border border-cyan-500/10 flex flex-wrap items-center justify-center gap-8 text-center"
         >
           {[
-            { label: 'Total Pipeline Time', value: '<100ms' },
-            { label: 'Features Analyzed', value: '20 dimensions' },
-            { label: 'ML Model Accuracy', value: '99.7%' },
-            { label: 'False Positive Rate', value: '<0.1%' },
+            { label: 'Median Inference Time', value: `${modelMetrics.latencyMedianMs.toFixed(1)} ms` },
+            { label: 'Features Analyzed', value: `${modelMetrics.features} dimensions` },
+            { label: 'Model Accuracy', value: pct(modelMetrics.accuracy) },
+            { label: 'False Positive Rate', value: pct(modelMetrics.fpr) },
           ].map((item) => (
             <div key={item.label}>
               <div className="text-2xl font-black text-gradient-cyan font-[Manrope]">{item.value}</div>

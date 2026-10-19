@@ -39,6 +39,36 @@ is_port_active() {
   lsof -iTCP:"$1" -sTCP:LISTEN -t >/dev/null 2>&1
 }
 
+BACKEND_PATTERN="inference_engine.api.main"
+FRONTEND_PATTERN="node_modules/.bin/vite"
+
+# stop_port PORT PATTERN — stop the listeners on PORT that belong to this project
+# (command line matches PATTERN): SIGTERM, wait up to 5s, then SIGKILL.
+# Returns 1 if the port is held by an unrelated process (which is left alone).
+stop_port() {
+  local port="$1" pattern="$2" pid ours=() foreign=0
+  for pid in $(lsof -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true); do
+    if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "$pattern"; then
+      ours+=("$pid")
+    else
+      foreign=1
+    fi
+  done
+  if [ "${#ours[@]}" -gt 0 ]; then
+    kill -TERM "${ours[@]}" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      kill -0 "${ours[@]}" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -KILL "${ours[@]}" 2>/dev/null || true
+  fi
+  if [ "$foreign" -eq 1 ]; then
+    echo -e "  ${RED}✗ Port :$port is used by another program — not touching it. Free the port and retry.${RESET}"
+    return 1
+  fi
+  return 0
+}
+
 open_browser() {
   local url="$1"
   if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
@@ -60,22 +90,13 @@ open_browser() {
 start_services() {
   banner
 
-  # --- Ensure RF model exists (auto-download on first run) ---
-  MODEL_FILE="$BACKEND_DIR/models/random_forest_fraud_model.joblib"
+  # --- Ensure the DeFiGuard model is present ---
+  MODEL_FILE="$BACKEND_DIR/models/defi_guard_model.joblib"
   if [ ! -f "$MODEL_FILE" ]; then
-    echo -e "  ${YELLOW}📦 Model not found — running download_model.py...${RESET}"
-    PYTHON_BIN="python"
-    if [ -f "$SCRIPT_DIR/.venv/bin/python" ]; then
-      PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
-    elif command -v python3 >/dev/null 2>&1; then
-      PYTHON_BIN="python3"
-    fi
-    cd "$BACKEND_DIR"
-    "$PYTHON_BIN" download_model.py || {
-      echo -e "  ${RED}❌ Model download failed. Check your internet connection and try again.${RESET}"
-      exit 1
-    }
-    echo -e "  ${GREEN}✓${RESET} Model downloaded successfully."
+    echo -e "  ${RED}❌ DeFiGuard model not found: $MODEL_FILE${RESET}"
+    echo -e "     It is versioned in git — run ${BOLD}git checkout -- backend/models/defi_guard_model.joblib${RESET},"
+    echo -e "     or copy ${BOLD}checkpoints/defi_guard_model.joblib${RESET} from the DeFiGuard training repository."
+    exit 1
   fi
 
   # --- Inference Engine (port 8001) ---
@@ -84,8 +105,7 @@ start_services() {
   else
     if is_port_active 8001; then
       echo -e "  ${YELLOW}⚠️  Port 8001 occupied but unresponsive, restarting...${RESET}"
-      lsof -iTCP:8001 -sTCP:LISTEN -t 2>/dev/null | xargs kill -9 2>/dev/null || true
-      sleep 0.5
+      stop_port 8001 "$BACKEND_PATTERN" || exit 1
     fi
     echo -e "  ${YELLOW}⏳${RESET} Starting Inference Engine on :8001 ..."
     cd "$BACKEND_DIR"
@@ -120,8 +140,7 @@ start_services() {
   else
     if is_port_active 5173; then
       echo -e "  ${YELLOW}⚠️  Port 5173 occupied but unresponsive, restarting...${RESET}"
-      lsof -iTCP:5173 -sTCP:LISTEN -t 2>/dev/null | xargs kill -9 2>/dev/null || true
-      sleep 0.5
+      stop_port 5173 "$FRONTEND_PATTERN" || exit 1
     fi
     echo -e "  ${YELLOW}⏳${RESET} Starting Vite Frontend on :5173 ..."
     cd "$FRONTEND_DIR"
@@ -161,17 +180,22 @@ start_services() {
 stop_services() {
   banner
   echo -e "  ${RED}Stopping services...${RESET}"
-  for port in 8001 5173; do
-    pids=$(lsof -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
-    if [ -n "$pids" ]; then
-      echo "$pids" | xargs kill -9 2>/dev/null || true
-      echo -e "  ${RED}✗${RESET} Stopped processes on :$port"
+  local failed=0
+  for spec in "8001:$BACKEND_PATTERN" "5173:$FRONTEND_PATTERN"; do
+    local port="${spec%%:*}" pattern="${spec#*:}"
+    if is_port_active "$port"; then
+      if stop_port "$port" "$pattern"; then
+        echo -e "  ${RED}✗${RESET} Stopped service on :$port"
+      else
+        failed=1
+      fi
     else
       echo -e "  ${DIM}  Nothing running on :$port${RESET}"
     fi
   done
-  pkill -f "inference_engine.api.main" 2>/dev/null || true
-  pkill -f "node_modules/.bin/vite" 2>/dev/null || true
+  if [ "$failed" -eq 1 ]; then
+    return 1
+  fi
   echo -e "  ${GREEN}✓${RESET} All services stopped cleanly."
   echo ""
 }
@@ -186,31 +210,17 @@ curl -s http://localhost:8001/health | python3 -m json.tool
 CURL1
   echo ""
 
-  echo -e "${RED}${BOLD}2. Suspicious Transaction Check (/predict)${RESET}"
+  echo -e "${RED}${BOLD}2. Scan a Transaction (/scan)${RESET}"
   cat << 'CURL2'
-curl -s -X POST http://localhost:8001/predict \
+curl -s -X POST http://localhost:8001/scan \
   -H "Content-Type: application/json" \
   -d '{
-    "length_transaction_hash": 66.0,
-    "length_to": 42.0,
-    "length_from": 42.0,
-    "is_same_address": 1.0,
-    "index": 1.0,
-    "block_number": 19500000.0,
-    "chain_id": 1.0,
-    "cumulative_gas_used": 848000.0,
-    "gas_used": 848000.0,
-    "gas_efficiency": 1.0,
-    "effective_gas_price": 2040000000.0,
-    "total_gas_cost": 1729920000000000.0,
-    "gas_price_ratio": 3.8,
-    "gas_per_log_event": 848000.0,
-    "value": 0.0,
-    "normalized_token_transfer": 0.0,
-    "log_count": 0.0,
-    "log_removed": 0.0,
-    "length_log": 0.0,
-    "event_activity_flag": 0.0
+    "from": "0x3b2a1f88e4c5d6a7890bcdef2345678901bcde22",
+    "to": "0x8c5d7e12f3a4b5c6d7890abcdef3456789012cd3",
+    "value_eth": 0.45,
+    "gas_price_gwei": 22,
+    "gas_limit": 21000,
+    "block_number": 19000000
   }' | python3 -m json.tool
 CURL2
   echo ""

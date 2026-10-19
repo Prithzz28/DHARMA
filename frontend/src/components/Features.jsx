@@ -4,12 +4,13 @@ import { useRef } from 'react';
 import {
   Scan, Brain, Shield, Gauge, MessageSquare, Zap
 } from 'lucide-react';
+import { modelMetrics } from '../data/modelMetrics';
 
 const features = [
   {
     icon: Scan,
     title: 'Real-Time Transaction Scanning',
-    description: 'Analyze every transaction before broadcasting to the blockchain. Zero latency, maximum security with sub-100ms response times.',
+    description: `Analyze every transaction before broadcasting to the blockchain. The model scores a transaction in ${modelMetrics.latencyMedianMs.toFixed(1)} ms (median, CPU).`,
     color: 'from-cyan-500 to-blue-600',
     glow: 'rgba(6,182,212,0.2)',
     badge: 'Core',
@@ -17,7 +18,7 @@ const features = [
   {
     icon: Brain,
     title: 'ML Fraud Detection',
-    description: 'Detect zero-day exploits using an optimized dual-model ensemble trained on on-chain transactions and historical fraud patterns.',
+    description: 'Detect zero-day exploits using the DeFiGuard graph neural network trained on on-chain transactions and historical fraud patterns.',
     color: 'from-purple-500 to-violet-600',
     glow: 'rgba(139,92,246,0.2)',
     badge: 'ML',
@@ -49,7 +50,7 @@ const features = [
   {
     icon: Zap,
     title: 'Lightning Fast Analysis',
-    description: 'Complete multi-layer analysis in under 100 milliseconds. Security that never slows down your DeFi experience.',
+    description: `Graph + tabular model analysis in ${modelMetrics.latencyMedianMs.toFixed(1)} ms median (${modelMetrics.latencyP95Ms.toFixed(1)} ms p95) on CPU. Optional LLM explanations take longer.`,
     color: 'from-yellow-500 to-orange-500',
     glow: 'rgba(234,179,8,0.2)',
     badge: 'Speed',

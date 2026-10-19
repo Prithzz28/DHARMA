@@ -9,7 +9,9 @@
     "build": "npm --prefix frontend run build",
     "frontend": "npm --prefix frontend run dev",
     "backend": "cd backend && PYTHONPATH=. \"$PWD/../.venv/bin/python\" -m inference_engine.api.main",
-    "test": "cd backend && PYTHONPATH=. \"$PWD/../.venv/bin/pytest\" tests/ -v",
-    "lint": "npm --prefix frontend run lint"
+    "test": "npm run test:backend && npm run test:frontend",
+    "lint": "npm --prefix frontend run lint",
+    "test:backend": "cd backend && PYTHONPATH=. \"$PWD/../.venv/bin/pytest\" tests/ -v",
+    "test:frontend": "npm --prefix frontend test"
   }
 }

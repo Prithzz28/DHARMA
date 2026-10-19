@@ -1,18 +1,33 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, useInView, AnimatePresence } from 'framer-motion';
 import {
   Lightbulb, Info, Sparkles, RefreshCw, ShieldAlert, ShieldCheck,
-  Send, Zap, Cpu, Layers, AlertTriangle, Activity,
+  Send, Zap, Layers, AlertTriangle, Activity,
   ChevronDown, ChevronUp,
 } from 'lucide-react';
-import { predictTransaction, fetchRiskExplanation, buildFeatureVector } from '../services/api';
+import { scanTransaction, validateScanForm } from '../services/api';
 
-// ─── Feature metadata for the 7 RF model features ────────────────────────────
+// ─── Feature metadata: DeFiGuard inputs the scanner sets ───────────────────────
 const MODEL_FEATURES = [
   {
-    key: 'length_transaction_hash',
-    label: 'Tx Hash Length',
-    desc: 'Length of the transaction hash string. Standard hashes are 66 characters — anomalous lengths flag potential spoofing.',
+    key: 'block_number',
+    label: 'Block Number',
+    desc: 'Block height of the transaction. The training data spans blocks ~0.07M–15M, so the model is sensitive to the era a transaction comes from.',
+  },
+  {
+    key: 'value',
+    label: 'Value Transferred',
+    desc: 'Native ETH sent with the transaction.',
+  },
+  {
+    key: 'effective_gas_price',
+    label: 'Gas Price',
+    desc: 'Gas price offered (Gwei). Extremely high values can indicate front-running or urgent drainer transactions.',
+  },
+  {
+    key: 'gas_used',
+    label: 'Gas Used (est.)',
+    desc: 'Estimated as 70% of the gas limit for a transaction that has not been mined yet.',
   },
   {
     key: 'length_to',
@@ -20,41 +35,26 @@ const MODEL_FEATURES = [
     desc: 'Length of the recipient address string. Standard Ethereum addresses are 42 characters.',
   },
   {
-    key: 'block_number',
-    label: 'Block Number',
-    desc: 'Block height at which the transaction is included. Unusual block numbers can indicate test / spam activity.',
-  },
-  {
-    key: 'gas_efficiency',
-    label: 'Gas Efficiency',
-    desc: 'Ratio of gas consumed to gas limit. A ratio close to 1.0 suggests tightly-estimated gas (common in exploit bots).',
-  },
-  {
     key: 'chain_id',
     label: 'Chain ID',
-    desc: 'Ethereum network chain ID. 1 = Mainnet, 11155111 = Sepolia testnet.',
-  },
-  {
-    key: 'effective_gas_price',
-    label: 'Effective Gas Price',
-    desc: 'Effective gas price paid in wei. Extremely high values indicate front-running or gas manipulation.',
+    desc: 'Ethereum network chain ID (1 = Mainnet).',
   },
   {
     key: 'is_same_address',
     label: 'Self-Transfer Flag',
-    desc: '1.0 when sender and recipient are the same address — a common wallet-drainer pattern.',
+    desc: '1 when sender and recipient are the same address — a common wallet-drainer pattern.',
   },
 ];
 
 // ─── Normalisation reference max values (for display bars only) ───────────────
 const FEATURE_MAX = {
-  length_transaction_hash: 66,
-  length_to: 42,
-  block_number: 20_000_000,
-  gas_efficiency: 1.0,
-  chain_id: 11155111,
+  block_number: 15_000_000,
+  value: 100e18,
   effective_gas_price: 500e9,
-  is_same_address: 1.0,
+  gas_used: 3_000_000,
+  length_to: 42,
+  chain_id: 1,
+  is_same_address: 1,
 };
 
 // ─── Preset attack scenarios ──────────────────────────────────────────────────
@@ -120,7 +120,7 @@ const PRESETS = [
     color: 'bg-green-500/15 border-green-500/30 text-green-400 hover:bg-green-500/25',
     data: {
       from: '0x3b2a1f88e4c5d6a7890bcdef2345678901bcde22',
-      to: '0x8c5d7e12f3a4b5c6d7890abcdef3456789012cd33',
+      to: '0x8c5d7e12f3a4b5c6d7890abcdef3456789012cd3',
       amount: '0.45',
       gasPrice: '22',
       gasLimit: '21000',
@@ -146,6 +146,14 @@ const PRESETS = [
 ];
 
 // ─── Feature bar component ────────────────────────────────────────────────────
+function formatFeatureValue(key, value) {
+  if (key === 'effective_gas_price') return `${(value / 1e9).toFixed(1)} Gwei`;
+  if (key === 'value') return `${(value / 1e18).toLocaleString(undefined, { maximumFractionDigits: 4 })} ETH`;
+  if (Math.abs(value) >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (!Number.isInteger(value)) return value.toFixed(3);
+  return value.toLocaleString();
+}
+
 function FeatureBar({ feature, value, maxValue, index, inView }) {
   const normalizedPct = maxValue > 0 ? Math.min((Math.abs(value) / maxValue) * 100, 100) : 0;
   const colorClass =
@@ -155,14 +163,7 @@ function FeatureBar({ feature, value, maxValue, index, inView }) {
       ? 'from-yellow-500 to-amber-400'
       : 'from-green-500 to-teal-500';
 
-  const displayValue =
-    value >= 1e9
-      ? `${(value / 1e9).toFixed(1)} Gwei`
-      : value >= 1e6
-      ? `${(value / 1e6).toFixed(1)}M`
-      : typeof value === 'number' && !Number.isInteger(value)
-      ? value.toFixed(3)
-      : value.toLocaleString();
+  const displayValue = formatFeatureValue(feature.key, value);
 
   return (
     <motion.div
@@ -198,7 +199,7 @@ function FeatureBar({ feature, value, maxValue, index, inView }) {
 }
 
 // ─── Input Field ──────────────────────────────────────────────────────────────
-function InputField({ label, placeholder, value, onChange, mono = true, hint }) {
+function InputField({ label, placeholder, value, onChange, mono = true, hint, error }) {
   return (
     <div>
       <div className="flex justify-between items-center mb-1">
@@ -210,13 +211,17 @@ function InputField({ label, placeholder, value, onChange, mono = true, hint }) 
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className={`w-full px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-sm text-white placeholder-gray-600 focus:border-purple-500/50 focus:outline-none transition-colors ${
-          mono ? 'font-mono' : ''
-        }`}
+        aria-invalid={Boolean(error)}
+        className={`w-full px-3 py-2 rounded-xl bg-white/5 border text-sm text-white placeholder-gray-600 focus:outline-none transition-colors ${
+          error ? 'border-red-500/50 focus:border-red-500/70' : 'border-white/10 focus:border-purple-500/50'
+        } ${mono ? 'font-mono' : ''}`}
       />
+      {error && <p className="mt-1 text-[10px] text-red-400">{error}</p>}
     </div>
   );
 }
+
+const ADVANCED_FIELDS = ['hash', 'blockNumber', 'logCount'];
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function AIExplanation() {
@@ -239,92 +244,88 @@ export default function AIExplanation() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAllErrors, setShowAllErrors] = useState(false);
 
-  // ── Core analysis function — always uses real inference API ─────────────────
-  const analyzeData = useCallback(async (data, isAuto = false) => {
-    if (!data.from && !data.to) {
-      if (!isAuto) {
-        setError('Enter at least a From or To address, or pick a preset scenario.');
-      }
-      return;
-    }
+  const fieldErrors = useMemo(() => validateScanForm(formData), [formData]);
+  const isValid = Object.keys(fieldErrors).length === 0;
+  // The displayed result is outdated once the form differs from the one it scored.
+  const isStale = Boolean(result) && result.form !== formData;
+  // Errors are shown for fields the user has filled in, or for all fields
+  // after a Scan attempt — not on the pristine form.
+  const errorFor = (field) =>
+    showAllErrors || String(formData[field] ?? '').trim() !== '' ? fieldErrors[field] : undefined;
 
-    if (isAuto) {
-      setIsScanning(true);
-    } else {
-      setLoading(true);
-      setError(null);
-    }
+  // Only the newest request may update the UI; older ones are aborted.
+  const controllerRef = useRef(null);
+  // Set when a change already triggered an explicit scan (presets), so the
+  // debounced auto-scan does not fire a duplicate request.
+  const skipAutoScanRef = useRef(false);
+
+  useEffect(() => () => controllerRef.current?.abort(), []);
+
+  // ── Core analysis: one POST /scan per run ──────────────────────────────────
+  // Explicit scans may use the LLM explainer; debounced auto-scans stay rule-based.
+  const analyzeData = useCallback(async (data, { auto = false } = {}) => {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+
+    if (auto) setIsScanning(true);
+    else setLoading(true);
+    setError(null);
 
     try {
-      // Build feature vector from form data (no hardcoded fraud signals)
-      const featureVector = buildFeatureVector(data);
-
-      // 1. POST /predict — get fraud score from ensemble model
-      const prediction = await predictTransaction(featureVector);
-
-      // 2. POST /predict/explain — get AI or rule-based explanation
-      let explanation;
-      try {
-        explanation = await fetchRiskExplanation(featureVector, data);
-      } catch {
-        // Fallback if explain endpoint fails
-        explanation = {
-          risk_level: prediction.is_fraud ? 'high' : 'low',
-          reasons: prediction.is_fraud
-            ? ['Model detected anomalous feature patterns consistent with fraudulent activity.']
-            : ['Transaction parameters align with legitimate baseline activity.'],
-          recommendation: prediction.is_fraud
-            ? 'CRITICAL: Do NOT sign this transaction. High probability of financial loss.'
-            : 'Transaction appears safe. Normal baseline parameters detected.',
-          is_fallback: true,
-          exec_time_ms: 0,
-        };
-      }
-
-      setResult({ prediction, explanation, featureVector });
-      setError(null);
+      const { features, prediction, explanation } = await scanTransaction(data, {
+        useLlm: !auto,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setResult({ prediction, explanation, features, form: data });
     } catch (err) {
-      if (!isAuto) {
-        setError(
-          `Backend error: ${err.message}. Make sure the inference engine is running on port 8001.`
-        );
-      }
+      if (controller.signal.aborted) return;
+      setError(`Scan failed: ${err.message}`);
     } finally {
-      setLoading(false);
-      setIsScanning(false);
+      if (controllerRef.current === controller) {
+        setLoading(false);
+        setIsScanning(false);
+      }
     }
   }, []);
 
   // ── Field change handler ────────────────────────────────────────────────────
   const handleFieldChange = (field, value) => {
-    if (error) setError(null);
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  // ── Preset handler ──────────────────────────────────────────────────────────
+  // ── Preset handler: one explicit scan, no follow-up auto-scan ───────────────
   const handlePreset = (preset) => {
-    setError(null);
-    setResult(null);
     const updated = { ...formData, ...preset.data };
+    skipAutoScanRef.current = true;
     setFormData(updated);
-    analyzeData(updated, false);
+    setResult(null);
+    analyzeData(updated);
   };
 
   // ── Manual scan ─────────────────────────────────────────────────────────────
   const handleAnalyze = () => {
-    setError(null);
-    analyzeData(formData, false);
+    setShowAllErrors(true);
+    if (isValid) {
+      analyzeData(formData);
+    } else if (ADVANCED_FIELDS.some((field) => fieldErrors[field])) {
+      setShowAdvanced(true);
+    }
   };
 
   // ── Debounced auto-analysis on field changes ─────────────────────────────────
   useEffect(() => {
-    if (!formData.from && !formData.to) return;
-    const timer = setTimeout(() => {
-      analyzeData(formData, true);
-    }, 600);
+    if (skipAutoScanRef.current) {
+      skipAutoScanRef.current = false;
+      return undefined;
+    }
+    if (!isValid) return undefined;
+    const timer = setTimeout(() => analyzeData(formData, { auto: true }), 600);
     return () => clearTimeout(timer);
-  }, [formData, analyzeData]);
+  }, [formData, isValid, analyzeData]);
 
   return (
     <section id="ai-explanation" className="py-28 relative overflow-hidden">
@@ -367,7 +368,7 @@ export default function AIExplanation() {
               className="text-gray-400 text-lg mb-8 leading-relaxed"
             >
               Enter transaction details or pick a preset scenario. Every scan routes through the live
-              Random Forest + DeFiGuard ensemble inference API — no hardcoded rules.
+              DeFiGuard graph neural network inference API — no hardcoded rules.
             </motion.p>
 
             {/* Feature highlights */}
@@ -379,7 +380,7 @@ export default function AIExplanation() {
             >
               {[
                 'Routes through live /predict + /predict/explain API',
-                'Dual-model ensemble: Random Forest + DeFiGuard neural net',
+                'DeFiGuard: GATv2 graph encoder + tabular cross-attention fusion',
                 'AI-generated risk explanations via Groq (Llama 3)',
                 'Feature-level breakdown from real model output',
               ].map((point) => (
@@ -441,6 +442,7 @@ export default function AIExplanation() {
                     label="From Address"
                     placeholder="0x742d...f44e"
                     value={formData.from}
+                    error={errorFor('from')}
                     onChange={(v) => handleFieldChange('from', v)}
                   />
                 </div>
@@ -449,6 +451,7 @@ export default function AIExplanation() {
                     label="To Address"
                     placeholder="0x1c9b...8d44"
                     value={formData.to}
+                    error={errorFor('to')}
                     onChange={(v) => handleFieldChange('to', v)}
                   />
                 </div>
@@ -457,6 +460,7 @@ export default function AIExplanation() {
                     label="Amount (ETH)"
                     placeholder="0.45"
                     value={formData.amount}
+                    error={errorFor('amount')}
                     onChange={(v) => handleFieldChange('amount', v)}
                   />
                 </div>
@@ -465,6 +469,7 @@ export default function AIExplanation() {
                     label="Gas Price (Gwei)"
                     placeholder="22"
                     value={formData.gasPrice}
+                    error={errorFor('gasPrice')}
                     onChange={(v) => handleFieldChange('gasPrice', v)}
                   />
                 </div>
@@ -474,6 +479,7 @@ export default function AIExplanation() {
                     placeholder="21000"
                     hint="Transfer: 21,000 · Contract: ~150k–2.5M"
                     value={formData.gasLimit}
+                    error={errorFor('gasLimit')}
                     onChange={(v) => handleFieldChange('gasLimit', v)}
                   />
                 </div>
@@ -507,6 +513,7 @@ export default function AIExplanation() {
                           label="Transaction Hash"
                           placeholder="0xabc123… (66 chars)"
                           value={formData.hash}
+                          error={errorFor('hash')}
                           onChange={(v) => handleFieldChange('hash', v)}
                         />
                       </div>
@@ -515,6 +522,7 @@ export default function AIExplanation() {
                           label="Block Number"
                           placeholder="19000000"
                           value={formData.blockNumber}
+                          error={errorFor('blockNumber')}
                           onChange={(v) => handleFieldChange('blockNumber', v)}
                         />
                       </div>
@@ -523,6 +531,7 @@ export default function AIExplanation() {
                           label="Log Count"
                           placeholder="0"
                           value={formData.logCount}
+                          error={errorFor('logCount')}
                           onChange={(v) => handleFieldChange('logCount', v)}
                         />
                       </div>
@@ -535,12 +544,13 @@ export default function AIExplanation() {
               <button
                 onClick={handleAnalyze}
                 disabled={loading}
+                aria-disabled={!isValid}
                 className="w-full flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold text-white bg-gradient-to-r from-purple-500 to-violet-600 hover:shadow-lg hover:shadow-purple-500/30 transition-all disabled:opacity-50"
               >
                 {loading ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    Running Ensemble Inference…
+                    Running DeFiGuard Inference…
                   </>
                 ) : (
                   <>
@@ -592,10 +602,18 @@ export default function AIExplanation() {
                         <h3 className="text-lg font-bold text-white font-[Manrope]">
                           Risk Analysis
                         </h3>
-                        {isScanning && (
+                        {isScanning ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-purple-500/20 text-purple-300 font-mono animate-pulse">
                             <RefreshCw className="w-2.5 h-2.5 animate-spin" />
                             Updating…
+                          </span>
+                        ) : isStale && (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] bg-yellow-500/15 text-yellow-300 font-mono"
+                            title="The form changed and this result has not been re-scanned yet."
+                          >
+                            <AlertTriangle className="w-2.5 h-2.5" />
+                            Outdated
                           </span>
                         )}
                       </div>
@@ -635,7 +653,7 @@ export default function AIExplanation() {
                       <FeatureBar
                         key={feature.key}
                         feature={feature}
-                        value={result.featureVector[feature.key] || 0}
+                        value={result.features[feature.key] || 0}
                         maxValue={FEATURE_MAX[feature.key] || 1}
                         index={idx}
                         inView={true}
@@ -664,16 +682,11 @@ export default function AIExplanation() {
                     </ul>
                   </div>
 
-                  {/* Ensemble fraud probability */}
-                  <div className="pt-4 border-t border-white/5 mb-4">
+                  {/* Fraud probability vs. threshold */}
+                  <div className="pt-4 border-t border-white/5 space-y-3">
                     <div className="flex justify-between items-center">
                       <div>
-                        <div className="text-xs text-gray-500 mb-1 flex items-center gap-1.5">
-                          Ensemble Fraud Probability
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-mono">
-                            {result.prediction.ensemble_mode}
-                          </span>
-                        </div>
+                        <div className="text-xs text-gray-500 mb-1">Fraud Probability</div>
                         <div
                           className={`text-3xl font-black font-[Manrope] ${
                             result.prediction.is_fraud ? 'text-red-400' : 'text-green-400'
@@ -689,7 +702,7 @@ export default function AIExplanation() {
                             : 'bg-green-500/10 border-green-500/20'
                         }`}
                       >
-                        <div className="text-xs text-gray-500 mb-1">Ensemble Verdict</div>
+                        <div className="text-xs text-gray-500 mb-1">Verdict</div>
                         <div
                           className={`text-sm font-black flex items-center gap-1.5 ${
                             result.prediction.is_fraud ? 'text-red-400' : 'text-green-400'
@@ -707,76 +720,32 @@ export default function AIExplanation() {
                         </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Dual-model breakdown */}
-                  <div className="pt-3 border-t border-white/5 space-y-2.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-gray-300 flex items-center gap-1.5 font-[Manrope]">
-                        <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                        Dual-Model Classification
-                      </span>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                        Max-Recall Ensemble
-                      </span>
+                    {/* Probability gauge with the block threshold marked */}
+                    <div
+                      className="relative h-2.5 bg-white/5 rounded-full"
+                      role="img"
+                      aria-label={`Fraud probability ${(result.prediction.fraud_probability * 100).toFixed(1)}%, block threshold ${(result.prediction.threshold * 100).toFixed(0)}%`}
+                    >
+                      <div
+                        className={`h-full rounded-full ${
+                          result.prediction.is_fraud
+                            ? 'bg-gradient-to-r from-orange-500 to-red-500'
+                            : 'bg-gradient-to-r from-green-500 to-teal-500'
+                        }`}
+                        style={{ width: `${Math.max(result.prediction.fraud_probability * 100, 2)}%` }}
+                      />
+                      <div
+                        className="absolute -top-1 w-0.5 bg-white/70"
+                        style={{ left: `${result.prediction.threshold * 100}%`, height: '18px' }}
+                      />
                     </div>
-
-                    <div className="grid grid-cols-2 gap-2.5">
-                      {/* Random Forest */}
-                      <div
-                        className={`p-3 rounded-xl border transition-all ${
-                          result.prediction.primary_model === 'random_forest'
-                            ? 'bg-cyan-500/10 border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.12)]'
-                            : 'bg-white/5 border-white/10 opacity-75'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-[11px] font-semibold text-gray-300 flex items-center gap-1">
-                            <Cpu className="w-3 h-3 text-cyan-400" />
-                            Random Forest
-                          </span>
-                          {result.prediction.primary_model === 'random_forest' && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-cyan-400/20 text-cyan-300 uppercase">
-                              Primary
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-lg font-bold font-[Manrope] text-white">
-                          {(result.prediction.rf_score * 100).toFixed(1)}%
-                        </div>
-                        <div className="text-[10px] text-gray-400 mt-0.5">
-                          7-Feature Tabular Model
-                        </div>
-                      </div>
-
-                      {/* DeFiGuard */}
-                      <div
-                        className={`p-3 rounded-xl border transition-all ${
-                          result.prediction.primary_model === 'defiguard'
-                            ? 'bg-purple-500/10 border-purple-500/30 shadow-[0_0_12px_rgba(168,85,247,0.12)]'
-                            : 'bg-white/5 border-white/10 opacity-75'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-[11px] font-semibold text-gray-300 flex items-center gap-1">
-                            <Zap className="w-3 h-3 text-purple-400" />
-                            DeFiGuard Net
-                          </span>
-                          {result.prediction.primary_model === 'defiguard' && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-400/20 text-purple-300 uppercase">
-                              Primary
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-lg font-bold font-[Manrope] text-white">
-                          {result.prediction.defiguard_score != null
-                            ? `${(result.prediction.defiguard_score * 100).toFixed(1)}%`
-                            : 'Standby'}
-                        </div>
-                        <div className="text-[10px] text-gray-400 mt-0.5">
-                          GNN + Tabular Neural Net
-                        </div>
-                      </div>
+                    <div className="flex items-center justify-between text-[10px] text-gray-500 font-mono">
+                      <span className="flex items-center gap-1">
+                        <Layers className="w-3 h-3 text-purple-400" />
+                        DeFiGuard · GATv2 + tabular fusion
+                      </span>
+                      <span>block threshold {(result.prediction.threshold * 100).toFixed(0)}%</span>
                     </div>
                   </div>
                 </motion.div>
@@ -794,10 +763,10 @@ export default function AIExplanation() {
                         <RefreshCw className="w-8 h-8 text-purple-400 animate-spin" />
                       </div>
                       <h3 className="text-lg font-bold text-white font-[Manrope] mb-2">
-                        Running Ensemble Inference…
+                        Running DeFiGuard Inference…
                       </h3>
                       <p className="text-sm text-gray-500 max-w-xs">
-                        Querying Random Forest + DeFiGuard ensemble. Usually under 100ms.
+                        Querying the DeFiGuard model. Usually under 100ms.
                       </p>
                     </>
                   ) : (
