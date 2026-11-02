@@ -12,7 +12,8 @@ environment variables override both.
 Environment variables
 ---------------------
 DEFIGUARD_MODEL_PATH      DeFiGuard .joblib (relative paths resolve against backend/).
-FRAUD_THRESHOLD           Probability in (0, 1) above which a transaction is blocked.
+FRAUD_THRESHOLD           Optional override (0, 1) of the per-mode block thresholds that
+                          ship inside the model (chosen on validation data in training).
 RATE_LIMIT_PER_MINUTE     Scoring requests allowed per client IP per minute (0 disables).
 HOST / PORT               Uvicorn bind address.
 LOG_LEVEL                 Python logging level (DEBUG, INFO, WARNING …).
@@ -25,7 +26,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from dotenv import dotenv_values
 from pydantic import Field, field_validator
@@ -55,9 +56,10 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     defiguard_model_path: Path = Path("models/defi_guard_model.joblib")
 
-    #: Block threshold. 0.80 chosen with scripts/evaluate_model.py on real
-    #: labelled transactions (see README "Model evaluation").
-    fraud_threshold: float = Field(default=0.80, gt=0.0, lt=1.0)
+    #: Optional block-threshold override. By default each mode (pending /
+    #: receipt) uses the threshold stored in the model, which was selected on
+    #: address-disjoint validation data during training (see README).
+    fraud_threshold: Optional[float] = Field(default=None, gt=0.0, lt=1.0)
 
     # ------------------------------------------------------------------ #
     # Server

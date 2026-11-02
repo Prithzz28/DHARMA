@@ -2,11 +2,13 @@
 """
 tests/test_scan.py
 ==================
-End-to-end API tests against the **real** models: request → validation →
-server-side feature extraction → DeFiGuard → explanation →
-response, plus /stats accounting and input validation.
+End-to-end API tests against the **real** model: request → validation →
+server-side feature extraction → DeFiGuard → explanation → response, plus
+/stats accounting and input validation.
 """
 from __future__ import annotations
+
+import math
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +23,7 @@ TRANSFER = {
     "value_eth": 0.45,
     "gas_price_gwei": 22,
     "gas_limit": 21000,
-    "block_number": 19000000,
+    "nonce": 57,
 }
 
 
@@ -36,42 +38,40 @@ def client(dg_model) -> TestClient:
 
 
 class TestScan:
-    def test_scan_returns_features_and_prediction(self, client):
+    def test_scan_returns_features_and_prediction(self, client, dg_model):
         resp = client.post("/scan", json={**TRANSFER, "explain": False})
         assert resp.status_code == 200, resp.text
         data = resp.json()
         features, pred = data["features"], data["prediction"]
         assert data["explanation"] is None
-        # Features come from the server-side extractor.
-        assert features["value"] == pytest.approx(0.45e18)
-        assert features["effective_gas_price"] == pytest.approx(22e9)
-        assert features["gas_used"] == pytest.approx(21000 * 0.7)
-        assert features["length_to"] == 42.0
-        assert features["gas_price_ratio"] == 1.0  # pending tx: as in training
-        assert features["gas_efficiency"] == 0.0  # no cumulative block gas before inclusion
+        # Features come from the shared extractor (log-scaled).
+        assert math.expm1(features["log_value_eth"]) == pytest.approx(0.45)
+        assert math.expm1(features["log_gas_price_gwei"]) == pytest.approx(22)
+        assert math.expm1(features["log_nonce"]) == pytest.approx(57)
+        assert features["has_calldata"] == 0.0
+        assert features["gas_used_ratio"] == 0.0  # no receipt before signing
+        assert pred["mode"] == "pending"
+        assert pred["threshold"] == dg_model.thresholds["pending"]
         assert 0.0 <= pred["fraud_probability"] <= 1.0
+        assert pred["is_fraud"] == (pred["fraud_probability"] >= pred["threshold"])
         assert pred["model"] == "defiguard"
 
-    def test_threshold_applied(self, client, monkeypatch):
+    def test_calldata_reaches_the_model(self, client):
+        plain = client.post("/scan", json=TRANSFER).json()
+        call = client.post("/scan", json={**TRANSFER, "data": "0x095ea7b3" + "00" * 64}).json()
+        assert call["features"]["sel_approval"] == 1.0
+        assert call["prediction"]["fraud_probability"] != plain["prediction"]["fraud_probability"]
+
+    def test_threshold_override_applied(self, client, monkeypatch):
         monkeypatch.setattr(settings, "fraud_threshold", 0.3)
         pred = client.post("/scan", json=TRANSFER).json()["prediction"]
         assert pred["threshold"] == 0.3
-        assert pred["is_fraud"] == (pred["fraud_probability"] > 0.3)
+        assert pred["is_fraud"] == (pred["fraud_probability"] >= 0.3)
 
-    def test_defiguard_scores_dataset_like_fraud_as_fraud(self, client, monkeypatch):
-        """Regression: address nodes without token context collapsed DeFiGuard to
-        ~0.014 for every scan. A transfer shaped like real fraud rows in the
-        training data must still be flagged through /scan."""
-        fraud_like = {**TRANSFER, "value_eth": 9, "gas_price_gwei": 60, "gas_limit": 30000, "block_number": 4228383}
-        # (shaped like a labelled fraud row in the DeFiTransLyzer data: 9 ETH transfer, 60 gwei, block ~4.2M)
-        pred = client.post("/scan", json=fraud_like).json()["prediction"]
-        assert pred["fraud_probability"] > 0.8
-        assert pred["is_fraud"] is True
-
-    def test_address_case_does_not_change_score(self, client):
-        upper = {**TRANSFER, "from": TRANSFER["from"].upper().replace("0X", "0x")}
+    def test_address_identity_does_not_change_score(self, client):
+        other = {**TRANSFER, "from": "0x" + "1" * 40, "to": "0x" + "2" * 40}
         a = client.post("/scan", json=TRANSFER).json()["prediction"]
-        b = client.post("/scan", json=upper).json()["prediction"]
+        b = client.post("/scan", json=other).json()["prediction"]
         assert a["fraud_probability"] == b["fraud_probability"]
 
     def test_scan_with_explanation_is_consistent_with_verdict(self, client):
@@ -96,7 +96,9 @@ class TestScan:
             {"gas_price_gwei": 0},
             {"gas_limit": 0},
             {"gas_limit": 21000.5},
-            {"log_count": -2},
+            {"nonce": -2},
+            {"data": "0xzz"},
+            {"data": "0xabc"},
             {"to": "0x" + "a" * 200},
             {"value_eth": "abc"},
         ],
@@ -117,28 +119,34 @@ class TestScan:
 
 
 class TestPredictEndpointsWithRealModel:
+    TX = {"from": TRANSFER["from"], "to": TRANSFER["to"], "value": hex(10**18), "gas": hex(21000),
+          "gasPrice": hex(22 * 10**9), "nonce": "0x3", "input": "0x"}
+    RECEIPT = {"from": TRANSFER["from"], "to": TRANSFER["to"], "gasUsed": hex(21000), "status": "0x1", "logs": []}
+
+    def test_predict_receipt_mode(self, client, dg_model):
+        data = client.post("/predict", json={"tx": self.TX, "receipt": self.RECEIPT}).json()
+        assert data["mode"] == "receipt"
+        assert data["threshold"] == dg_model.thresholds["receipt"]
+        assert data["fraud_probability"] == pytest.approx(
+            dg_model.score(self.TX, self.RECEIPT)["fraud_probability"], abs=1e-6)
+
     def test_predict_rejects_infinity(self, client):
-        resp = client.post(
-            "/predict", content='{"value": Infinity}', headers={"Content-Type": "application/json"}
-        )
+        resp = client.post("/predict", content='{"tx": {"value": Infinity}}',
+                           headers={"Content-Type": "application/json"})
         assert resp.status_code == 422
 
-    @pytest.mark.parametrize("patch", [{"gas_efficiency": -0.1}, {"normalized_token_transfer": 1.5}], ids=str)
-    def test_predict_rejects_out_of_range(self, client, patch):
-        assert client.post("/predict", json=patch).status_code == 422
-
     def test_predict_explain_includes_prediction_and_counts_once(self, client):
-        resp = client.post("/predict/explain", json={"features": {"length_to": 42, "gas_used": 21000}})
+        resp = client.post("/predict/explain", json={"tx": self.TX, "use_llm": False})
         assert resp.status_code == 200
         data = resp.json()
-        assert set(data["prediction"]) >= {"is_fraud", "fraud_probability", "threshold"}
+        assert set(data["prediction"]) >= {"is_fraud", "fraud_probability", "threshold", "mode"}
         assert client.get("/stats").json()["total_predictions"] == 1
 
-    def test_health_reports_model_and_threshold(self, client):
+    def test_health_reports_model_thresholds(self, client, dg_model):
         data = client.get("/health").json()
         assert data["status"] == "ok"
         assert data["model_loaded"] is True
-        assert data["fraud_threshold"] == 0.8
+        assert data["thresholds"] == dg_model.thresholds
 
 
 def test_scan_use_llm_flag_controls_llm(client, monkeypatch):

@@ -6,7 +6,7 @@ Risk explanation service for the Web3 Transaction Firewall.
 
 Turns the DeFiGuard verdict plus the transaction's feature signals into a
 human-readable explanation. The **risk level is always derived from the model
-verdict** (``is_fraud`` + ``FRAUD_THRESHOLD``) so the explanation can never
+verdict** (``is_fraud`` + the applied threshold) so the explanation can never
 contradict the BLOCKED / SAFE decision; an LLM (Groq, optional) only writes
 the reasons and recommendation text. Without a key, when the LLM budget is
 exhausted, or when the LLM returns anything malformed, a deterministic
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from typing import Any, Dict, List, Optional
 
@@ -66,13 +67,34 @@ def mask_address(address: Optional[str]) -> str:
     return f"{address[:6]}...{address[-4:]}"
 
 
-def risk_level_for(is_fraud: bool, fraud_probability: float) -> str:
+def risk_level_for(is_fraud: bool, fraud_probability: float, threshold: float) -> str:
     """Risk band consistent with the model verdict."""
     if is_fraud:
         return "high"
-    if fraud_probability >= min(MEDIUM_RISK_FLOOR, settings.fraud_threshold):
+    if fraud_probability >= min(MEDIUM_RISK_FLOOR, threshold):
         return "medium"
     return "low"
+
+
+def _signals(features: Dict[str, float]) -> Dict[str, Any]:
+    """Human-scale values from DeFiGuard's (partly log-scaled) features."""
+    unlog = lambda name: math.expm1(features.get(name, 0.0))
+    flag = lambda name: features.get(name, 0.0) > 0.5
+    return {
+        "gas_price_gwei": unlog("log_gas_price_gwei"),
+        "value_eth": unlog("log_value_eth"),
+        "gas_limit": unlog("log_gas_limit"),
+        "nonce": round(unlog("log_nonce")),
+        "calldata_bytes": round(unlog("log_calldata_bytes")),
+        "token_transfers": round(unlog("log_n_transfers")),
+        "self_transfer": flag("is_self_transfer"),
+        "contract_creation": flag("is_contract_creation"),
+        "approval_call": flag("sel_approval"),
+        "transfer_from_call": flag("sel_transfer_from"),
+        "unknown_function": flag("sel_unknown"),
+        "reverted": flag("status_failed"),
+        "mint": flag("has_mint"),
+    }
 
 
 def _recommendation_for(risk_level: str) -> str:
@@ -87,44 +109,57 @@ def _build_rule_fallback_explanation(
     features: Dict[str, float],
     is_fraud: bool,
     fraud_probability: float,
+    threshold: float,
     raw_from: Optional[str] = None,
     raw_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate structured, deterministic risk explanations based on feature signals."""
     reasons: List[str] = []
-
-    effective_gas_price_gwei = features.get("effective_gas_price", 0.0) / 1e9
-    value_eth = features.get("value", 0.0) / 1e18
-    is_same_addr = features.get("is_same_address", 0.0) > 0.5
-    gas_used = features.get("gas_used", 21000.0)
-    log_removed = features.get("log_removed", 0.0) > 0.5
-
-    risk_level = risk_level_for(is_fraud, fraud_probability)
+    sig = _signals(features)
+    risk_level = risk_level_for(is_fraud, fraud_probability, threshold)
 
     # Absolute gas price heuristics (no live base fee is available to compare against).
-    if effective_gas_price_gwei > 100:
+    if sig["gas_price_gwei"] > 100:
         reasons.append(
-            f"Gas price ({effective_gas_price_gwei:.0f} Gwei) is unusually high, a pattern associated with "
+            f"Gas price ({sig['gas_price_gwei']:.0f} Gwei) is unusually high, a pattern associated with "
             "front-running or urgent drainer transactions."
         )
-    elif effective_gas_price_gwei > 50:
-        reasons.append(f"Gas price ({effective_gas_price_gwei:.0f} Gwei) is elevated.")
+    elif sig["gas_price_gwei"] > 50:
+        reasons.append(f"Gas price ({sig['gas_price_gwei']:.0f} Gwei) is elevated.")
 
-    if value_eth > 10.0:
-        reasons.append(f"High ETH transfer volume ({value_eth:.2f} ETH) increases financial risk footprint.")
+    if sig["value_eth"] > 10.0:
+        reasons.append(f"High ETH transfer volume ({sig['value_eth']:.2f} ETH) increases financial risk footprint.")
 
-    if is_same_addr:
+    if sig["self_transfer"]:
         reasons.append(
             f"Self-transfer detected (sender and recipient address match: {mask_address(raw_from)})."
         )
 
-    if log_removed:
-        reasons.append("Event logs indicate a blockchain reorganisation or log removal flag.")
-
-    if gas_used > 300_000:
+    if sig["approval_call"]:
         reasons.append(
-            f"High gas consumption ({gas_used:,.0f} units) indicates complex contract execution logic."
+            "Calls a token approval (approve / setApprovalForAll) — the permission wallet drainers ask for."
         )
+    if sig["transfer_from_call"]:
+        reasons.append("Moves tokens on another account's behalf (transferFrom).")
+    if sig["contract_creation"]:
+        reasons.append("Deploys a new contract.")
+    elif sig["unknown_function"]:
+        reasons.append("Calls an unrecognised contract function (not a standard token or DEX method).")
+
+    if sig["nonce"] == 0 and not sig["contract_creation"]:
+        reasons.append("First transaction ever sent by this account (nonce 0).")
+
+    if sig["gas_limit"] > 300_000:
+        reasons.append(
+            f"High gas limit ({sig['gas_limit']:,.0f} units) indicates complex contract execution logic."
+        )
+
+    if sig["reverted"]:
+        reasons.append("Execution reverted (failed transaction).")
+    if sig["mint"]:
+        reasons.append("Mints tokens (Transfer event from the zero address).")
+    if sig["token_transfers"] > 5:
+        reasons.append(f"Moves tokens in {sig['token_transfers']} separate transfers.")
 
     if not reasons and risk_level == "low":
         reasons.append(
@@ -164,6 +199,7 @@ async def _call_groq_explainer(
     is_fraud: bool,
     fraud_probability: float,
     risk_level: str,
+    threshold: float,
     raw_from: Optional[str] = None,
     raw_to: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -179,7 +215,7 @@ async def _call_groq_explainer(
         logger.info("LLM call budget exhausted — using rule-based explanation.")
         raise LLMUnavailable("AI explanation limit reached; try again in a minute.")
 
-    value_eth = features.get("value", 0.0) / 1e18
+    sig = _signals(features)
     system_prompt = (
         "You are an expert Web3 DeFi fraud security analyst working for a real-time transaction firewall. "
         "The firewall's DeFiGuard model has ALREADY decided the verdict; explain it, do not contradict it. "
@@ -199,15 +235,20 @@ async def _call_groq_explainer(
         "Ethereum Transaction Risk Analysis:\n"
         f"Verdict: {'BLOCKED' if is_fraud else 'SAFE'} (risk level: {risk_level})\n"
         f"Model Fraud Probability: {fraud_probability * 100:.1f}% "
-        f"(block threshold {settings.fraud_threshold * 100:.0f}%)\n"
+        f"(block threshold {threshold * 100:.0f}%)\n"
         f"From Address: {mask_address(raw_from)}\n"
         f"To Address: {mask_address(raw_to)}\n"
-        f"Transfer Amount: {value_eth:.6f} ETH\n"
-        f"Effective Gas Price: {features.get('effective_gas_price', 0.0) / 1e9:.1f} Gwei\n"
-        f"Gas Used: {features.get('gas_used', 0.0):,.0f} units\n"
-        f"Self-Transfer (from == to): {features.get('is_same_address', 0.0) > 0.5}\n"
-        # The event count is in length_log (log_count is constant 0 in the training data).
-        f"Log Events: {features.get('length_log', 0.0):.0f}\n"
+        f"Transfer Amount: {sig['value_eth']:.6f} ETH\n"
+        f"Gas Price: {sig['gas_price_gwei']:.1f} Gwei\n"
+        f"Gas Limit: {sig['gas_limit']:,.0f} units\n"
+        f"Sender Nonce: {sig['nonce']}\n"
+        f"Calldata: {sig['calldata_bytes']} bytes\n"
+        f"Self-Transfer (from == to): {sig['self_transfer']}\n"
+        f"Token Approval Call: {sig['approval_call']}\n"
+        f"Unrecognised Contract Function: {sig['unknown_function']}\n"
+        f"Contract Creation: {sig['contract_creation']}\n"
+        f"Token Transfers in Receipt: {sig['token_transfers']}\n"
+        f"Execution Reverted: {sig['reverted']}\n"
     )
 
     try:
@@ -265,6 +306,7 @@ async def explain_transaction_risk(
     features: Dict[str, float],
     is_fraud: bool,
     fraud_probability: float,
+    threshold: float,
     raw_from: Optional[str] = None,
     raw_to: Optional[str] = None,
     use_llm: bool = True,
@@ -275,12 +317,14 @@ async def explain_transaction_risk(
     deterministic rule-based explainer.
     """
     t0 = time.perf_counter()
-    risk_level = risk_level_for(is_fraud, fraud_probability)
+    risk_level = risk_level_for(is_fraud, fraud_probability, threshold)
 
     fallback_reason: Optional[str] = None
     if use_llm:
         try:
-            llm = await _call_groq_explainer(features, is_fraud, fraud_probability, risk_level, raw_from, raw_to)
+            llm = await _call_groq_explainer(
+                features, is_fraud, fraud_probability, risk_level, threshold, raw_from, raw_to
+            )
         except LLMUnavailable as exc:
             fallback_reason = str(exc)
         else:
@@ -292,7 +336,7 @@ async def explain_transaction_risk(
                 "exec_time_ms": round((time.perf_counter() - t0) * 1000, 2),
             }
 
-    result = _build_rule_fallback_explanation(features, is_fraud, fraud_probability, raw_from, raw_to)
+    result = _build_rule_fallback_explanation(features, is_fraud, fraud_probability, threshold, raw_from, raw_to)
     # Only set when an AI explanation was requested but could not be produced.
     result["fallback_reason"] = fallback_reason
     result["exec_time_ms"] = round((time.perf_counter() - t0) * 1000, 2)

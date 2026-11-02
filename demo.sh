@@ -220,7 +220,7 @@ curl -s -X POST http://localhost:8001/scan \
     "value_eth": 0.45,
     "gas_price_gwei": 22,
     "gas_limit": 21000,
-    "block_number": 19000000
+    "nonce": 57
   }' | python3 -m json.tool
 CURL2
   echo ""

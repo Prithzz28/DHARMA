@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import math
+
 import pytest
 
+from feature_extractor.extractor import extract_features
 from inference_engine.services.explainer import (
     _build_rule_fallback_explanation,
     explain_transaction_risk,
@@ -45,27 +48,19 @@ def test_mask_address_empty():
 # _build_rule_fallback_explanation
 # ---------------------------------------------------------------------------
 
-SAFE_FEATURES = {
-    "gas_price_ratio": 1.0,
-    "effective_gas_price": 20e9,
-    "value": 0.0,
-    "is_same_address": 0.0,
-    "gas_used": 21000.0,
-    "log_removed": 0.0,
-}
-
-FRAUD_FEATURES = {
-    "gas_price_ratio": 4.5,
-    "effective_gas_price": 200e9,
-    "value": 15e18,
-    "is_same_address": 1.0,
-    "gas_used": 400_000.0,
-    "log_removed": 1.0,
-}
+SENDER = "0x742d35cc6634c0532925a3b844bc9e7595f44e2a"
+SAFE_TX = {"from": SENDER, "to": "0x8c5d7e12f3a4b5c6d7890abcdef3456789012cd3", "value": "0x0",
+           "gas": hex(21000), "gasPrice": hex(20 * 10**9), "nonce": "0x10", "input": "0x"}
+# Self-addressed token approval at 200 gwei moving 15 ETH from a fresh account.
+FRAUD_TX = {"from": SENDER, "to": SENDER, "value": hex(15 * 10**18), "gas": hex(400_000),
+            "gasPrice": hex(200 * 10**9), "nonce": "0x0", "input": "0x095ea7b3" + "00" * 64}
+SAFE_FEATURES = extract_features(SAFE_TX)
+FRAUD_FEATURES = extract_features(FRAUD_TX)
+THRESHOLD = 0.8
 
 
 def test_rule_fallback_low_risk():
-    result = _build_rule_fallback_explanation(SAFE_FEATURES, False, 0.1)
+    result = _build_rule_fallback_explanation(SAFE_FEATURES, False, 0.1, THRESHOLD)
     assert result["risk_level"] == "low"
     assert len(result["reasons"]) >= 1
     assert "safe" in result["recommendation"].lower()
@@ -73,7 +68,7 @@ def test_rule_fallback_low_risk():
 
 
 def test_rule_fallback_high_risk():
-    result = _build_rule_fallback_explanation(FRAUD_FEATURES, True, 0.9)
+    result = _build_rule_fallback_explanation(FRAUD_FEATURES, True, 0.9, THRESHOLD)
     assert result["risk_level"] == "high"
     assert len(result["reasons"]) >= 3
     assert "CRITICAL" in result["recommendation"]
@@ -81,22 +76,32 @@ def test_rule_fallback_high_risk():
 
 
 def test_rule_fallback_medium_risk():
-    medium_features = {**SAFE_FEATURES, "effective_gas_price": 60e9}
-    result = _build_rule_fallback_explanation(medium_features, False, 0.55)
+    medium_features = extract_features({**SAFE_TX, "gasPrice": hex(60 * 10**9)})
+    result = _build_rule_fallback_explanation(medium_features, False, 0.55, THRESHOLD)
+    assert any("elevated" in r for r in result["reasons"])
     assert result["risk_level"] == "medium"
     assert result["is_fallback"] is True
 
 
 def test_rule_fallback_self_transfer_masks_address():
     result = _build_rule_fallback_explanation(
-        {**FRAUD_FEATURES, "is_same_address": 1.0},
+        FRAUD_FEATURES,
         True,
         0.9,
+        THRESHOLD,
         raw_from="0x742d35Cc6634C0532925a3b844Bc9e7595f44e2a",
     )
     full_addr = "0x742d35Cc6634C0532925a3b844Bc9e7595f44e2a"
     reasons_text = " ".join(result["reasons"])
+    assert "Self-transfer" in reasons_text
     assert full_addr not in reasons_text  # PII not exposed
+
+
+def test_rule_fallback_names_drainer_signals():
+    reasons = " ".join(_build_rule_fallback_explanation(FRAUD_FEATURES, True, 0.9, THRESHOLD)["reasons"])
+    assert "approval" in reasons
+    assert "nonce 0" in reasons
+    assert "200 Gwei" in reasons
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +114,7 @@ async def test_explain_transaction_risk_uses_fallback_when_no_key():
         features=SAFE_FEATURES,
         is_fraud=False,
         fraud_probability=0.1,
+        threshold=THRESHOLD,
     )
     assert "risk_level" in result
     assert "reasons" in result
@@ -123,6 +129,7 @@ async def test_explain_transaction_risk_high_fraud():
         features=FRAUD_FEATURES,
         is_fraud=True,
         fraud_probability=0.95,
+        threshold=THRESHOLD,
     )
     assert result["risk_level"] == "high"
 
@@ -134,27 +141,17 @@ async def test_explain_transaction_risk_high_fraud():
 @pytest.fixture
 def mock_dg_model():
     model = MagicMock()
-    model.predict_fraud_proba.return_value = 0.9
+    model.score.return_value = {"fraud_probability": 0.9, "mode": "pending"}
+    model.thresholds = {"pending": 0.5, "receipt": 0.5}
     return model
 
 
 @pytest.mark.asyncio
 async def test_explain_endpoint_returns_valid_schema(mock_dg_model):
     from inference_engine.api.main import explain_risk
-    from inference_engine.api.schemas import RiskExplanationRequest, TransactionFeatures
+    from inference_engine.api.schemas import RiskExplanationRequest
 
-    request = RiskExplanationRequest(
-        features=TransactionFeatures(
-            length_transaction_hash=66,
-            length_to=42,
-            length_from=42,
-            is_same_address=1.0,
-            gas_efficiency=1.0,
-            effective_gas_price=200e9,
-        ),
-        raw_from="0x742d35Cc6634C0532925a3b844Bc9e7595f44e2a",
-        raw_to="0x742d35Cc6634C0532925a3b844Bc9e7595f44e2a",
-    )
+    request = RiskExplanationRequest(tx=FRAUD_TX, use_llm=False)
 
     result = await explain_risk(
         request=request,
@@ -168,6 +165,7 @@ async def test_explain_endpoint_returns_valid_schema(mock_dg_model):
     assert result.exec_time_ms >= 0
     assert result.prediction is not None
     assert result.prediction.is_fraud is True
+    assert result.prediction.mode == "pending"
     # The explanation's risk level must agree with the model verdict.
     assert result.risk_level == "high"
 
@@ -209,7 +207,7 @@ def groq(monkeypatch):
 @pytest.mark.asyncio
 async def test_llm_explanation_used_when_valid(groq):
     calls = groq(_json.dumps({"reasons": ["Gas is 10x base fee."], "recommendation": "Do NOT sign."}))
-    result = await explain_transaction_risk(FRAUD_FEATURES, is_fraud=True, fraud_probability=0.9,
+    result = await explain_transaction_risk(FRAUD_FEATURES, is_fraud=True, fraud_probability=0.9, threshold=THRESHOLD,
                                             raw_from="0x742d35Cc6634C0532925a3b844Bc9e7595f44e2a")
     assert result["is_fallback"] is False
     assert result["reasons"] == ["Gas is 10x base fee."]
@@ -222,7 +220,7 @@ async def test_llm_explanation_used_when_valid(groq):
 @pytest.mark.asyncio
 async def test_llm_cannot_contradict_model_verdict(groq):
     groq(_json.dumps({"risk_level": "low", "reasons": ["Looks fine."], "recommendation": "Proceed."}))
-    result = await explain_transaction_risk(FRAUD_FEATURES, is_fraud=True, fraud_probability=0.95)
+    result = await explain_transaction_risk(FRAUD_FEATURES, is_fraud=True, fraud_probability=0.95, threshold=THRESHOLD)
     assert result["risk_level"] == "high"
 
 
@@ -241,7 +239,7 @@ async def test_llm_cannot_contradict_model_verdict(groq):
 @pytest.mark.asyncio
 async def test_malformed_llm_output_falls_back(groq, content, status):
     groq(content, status)
-    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD)
     assert result["is_fallback"] is True
     assert result["risk_level"] == "low"
 
@@ -250,8 +248,8 @@ async def test_malformed_llm_output_falls_back(groq, content, status):
 async def test_llm_call_budget_enforced(groq, monkeypatch):
     monkeypatch.setattr(settings, "llm_max_calls_per_minute", 1)
     calls = groq(_json.dumps({"reasons": ["r"], "recommendation": "x"}))
-    first = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
-    second = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    first = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD)
+    second = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD)
     assert first["is_fallback"] is False
     assert second["is_fallback"] is True
     assert len(calls) == 1
@@ -260,19 +258,17 @@ async def test_llm_call_budget_enforced(groq, monkeypatch):
 @pytest.mark.asyncio
 async def test_use_llm_false_skips_llm(groq):
     calls = groq(_json.dumps({"reasons": ["r"], "recommendation": "x"}))
-    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, use_llm=False)
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD, use_llm=False)
     assert result["is_fallback"] is True
     assert calls == []
 
 
-def test_risk_bands_follow_configured_threshold(monkeypatch):
-    monkeypatch.setattr(settings, "fraud_threshold", 0.8)
-    assert explainer.risk_level_for(False, 0.7) == "medium"
-    assert explainer.risk_level_for(False, 0.3) == "low"
-    assert explainer.risk_level_for(True, 0.81) == "high"
-    monkeypatch.setattr(settings, "fraud_threshold", 0.4)
-    assert explainer.risk_level_for(False, 0.39) == "low"
-    assert explainer.risk_level_for(False, 0.45) == "medium"  # not blocked, above the floor
+def test_risk_bands_follow_applied_threshold():
+    assert explainer.risk_level_for(False, 0.7, 0.8) == "medium"
+    assert explainer.risk_level_for(False, 0.3, 0.8) == "low"
+    assert explainer.risk_level_for(True, 0.81, 0.8) == "high"
+    assert explainer.risk_level_for(False, 0.39, 0.4) == "low"
+    assert explainer.risk_level_for(False, 0.45, 0.4) == "medium"  # not blocked, above the floor
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +281,7 @@ def _groq_error(status, message):
 
 @pytest.mark.asyncio
 async def test_no_key_reports_reason():
-    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD)
     assert result["is_fallback"] is True
     assert result["fallback_reason"] == "No GROQ_API_KEY configured."
 
@@ -293,7 +289,7 @@ async def test_no_key_reports_reason():
 @pytest.mark.asyncio
 async def test_rule_based_by_request_has_no_reason(groq):
     groq(_json.dumps({"reasons": ["r"], "recommendation": "x"}))
-    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, use_llm=False)
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD, use_llm=False)
     assert result["fallback_reason"] is None
 
 
@@ -305,7 +301,7 @@ async def test_retired_model_reported_clearly(monkeypatch, caplog):
     monkeypatch.setattr(explainer, "_groq_transport", _groq_error(
         404, "The model `llama-3.3-70b-versatile` does not exist or you do not have access to it."))
     with caplog.at_level("ERROR"):
-        result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+        result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD)
     assert result["is_fallback"] is True
     assert result["fallback_reason"] == "Groq model 'llama-3.3-70b-versatile' is unavailable; set GROQ_MODEL."
     assert "set GROQ_MODEL" in caplog.text
@@ -324,7 +320,7 @@ async def test_retired_model_reported_clearly(monkeypatch, caplog):
 async def test_failure_reasons(monkeypatch, transport, reason):
     monkeypatch.setattr(settings, "groq_api_key", "test-key")
     monkeypatch.setattr(explainer, "_groq_transport", transport)
-    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD)
     assert result["fallback_reason"] == reason
 
 
@@ -332,16 +328,19 @@ async def test_failure_reasons(monkeypatch, transport, reason):
 async def test_configured_model_is_sent(groq, monkeypatch):
     monkeypatch.setattr(settings, "groq_model", "qwen/qwen3.8-27b")
     calls = groq(_json.dumps({"reasons": ["r"], "recommendation": "x"}))
-    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1)
+    result = await explain_transaction_risk(SAFE_FEATURES, is_fraud=False, fraud_probability=0.1, threshold=THRESHOLD)
     assert calls[0]["model"] == "qwen/qwen3.8-27b"
     assert result["fallback_reason"] is None
 
 
 @pytest.mark.asyncio
-async def test_prompt_reports_real_log_count(groq):
-    """Regression: the prompt read log_count (always 0) instead of length_log."""
+async def test_prompt_reports_human_scale_values(groq):
+    """Log-scaled model features are converted back before reaching the prompt."""
     calls = groq(_json.dumps({"reasons": ["r"], "recommendation": "x"}))
-    await explain_transaction_risk({**SAFE_FEATURES, "length_log": 3.0, "log_count": 0.0}, False, 0.1)
+    features = {**FRAUD_FEATURES, "log_n_transfers": math.log1p(3)}
+    await explain_transaction_risk(features, True, 0.9, THRESHOLD)
     prompt = calls[0]["messages"][1]["content"]
-    assert "Log Events: 3" in prompt
-    assert "Gas Efficiency" not in prompt
+    assert "Token Transfers in Receipt: 3" in prompt
+    assert "Gas Price: 200.0 Gwei" in prompt
+    assert "Transfer Amount: 15.000000 ETH" in prompt
+    assert "Token Approval Call: True" in prompt

@@ -5,15 +5,15 @@ import { HelpCircle, ChevronDown } from 'lucide-react';
 const faqs = [
   {
     q: 'How does DeFiShield work?',
-    a: 'DeFiShield intercepts transactions before they are broadcast to the blockchain. It extracts 20 on-chain features using our DeFiTransLyzer pipeline, then evaluates them with the DeFiGuard graph neural network. The entire evaluation completes in milliseconds, providing a fraud probability and a plain-language explanation of the verdict.',
+    a: 'DeFiShield intercepts transactions before they are broadcast to the blockchain. It extracts transaction-local features (value, gas, nonce, calldata intent — no address history) and scores them with DeFiGuard; when a receipt or simulation is available, the receipt’s token-flow graph is analysed by its graph neural network. The entire evaluation completes in milliseconds, providing a fraud probability and a plain-language explanation of the verdict.',
   },
   {
     q: 'Can it detect new, unseen scams?',
-    a: 'Yes. The models are trained on feature-level structural and behavioral signals rather than static blacklists or contract signatures. It detects anomalous gas dynamics, drainer self-transfer patterns, and unusual transaction parameters that characterize novel zero-day attacks.',
+    a: 'To a measured extent. DeFiGuard uses transaction-level signals rather than blacklists, and it is evaluated only on wallets it never saw in training (and on later blocks than it was trained on) — the figures on this page come from those held-out wallets. Novel attack patterns that look unlike anything in the training data can still be missed.',
   },
   {
     q: 'Does it require wallet transaction history?',
-    a: 'No. DeFiShield analyzes each transaction in isolation using the transaction payload and parameters at the time of signature. Prior wallet history is not required for accurate fraud detection.',
+    a: 'No. DeFiShield analyzes each transaction in isolation using the transaction payload and parameters at the time of signature. No wallet history or address reputation is used — addresses enter the model only through their role in the transaction.',
   },
   {
     q: 'Is DeFiShield open source?',
@@ -21,7 +21,7 @@ const faqs = [
   },
   {
     q: 'Which blockchains are supported?',
-    a: 'DeFiShield supports Ethereum Mainnet and all EVM-compatible networks and testnets (such as Sepolia). Any transaction payload adhering to standard EVM parameters can be evaluated directly.',
+    a: 'The model was trained and evaluated on Ethereum Mainnet transactions. Any EVM-format payload can be scored, but accuracy on other EVM networks has not been measured.',
   },
 ];
 

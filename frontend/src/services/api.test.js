@@ -14,9 +14,8 @@ const VALID_FORM = {
   amount: '0.45',
   gasPrice: '22',
   gasLimit: '21000',
-  blockNumber: '',
-  hash: '',
-  logCount: '0',
+  nonce: '',
+  data: '',
 };
 
 function jsonResponse(status, body, headers = {}) {
@@ -112,14 +111,13 @@ describe('toScanRequest', () => {
       value_eth: 0.45,
       gas_price_gwei: 22,
       gas_limit: 21000,
-      log_count: 0,
     });
   });
 
   it('includes optional fields when provided', () => {
-    const req = toScanRequest({ ...VALID_FORM, blockNumber: '19000000', hash: ' 0xabc ' });
-    expect(req.block_number).toBe(19000000);
-    expect(req.tx_hash).toBe('0xabc');
+    const req = toScanRequest({ ...VALID_FORM, nonce: '7', data: ' 0xa9059cbb ' });
+    expect(req.nonce).toBe(7);
+    expect(req.data).toBe('0xa9059cbb');
   });
 });
 
@@ -134,9 +132,10 @@ describe('validateScanForm', () => {
       amount: '-1',
       gasPrice: 'abc',
       gasLimit: '21000.5',
-      logCount: '-3',
+      nonce: '-3',
+      data: '0xzz',
     });
-    expect(Object.keys(errors).sort()).toEqual(['amount', 'gasLimit', 'gasPrice', 'logCount']);
+    expect(Object.keys(errors).sort()).toEqual(['amount', 'data', 'gasLimit', 'gasPrice', 'nonce']);
   });
 
   it('requires at least one address and the gas fields', () => {
@@ -163,9 +162,8 @@ describe('scanner presets', async () => {
       value_eth: Number(preset.data.amount),
       gas_price_gwei: Number(preset.data.gasPrice),
       gas_limit: Number(preset.data.gasLimit),
-      block_number: Number(preset.data.blockNumber),
-      log_count: Number(preset.data.logCount),
-      tx_hash: preset.data.hash,
+      nonce: Number(preset.data.nonce),
+      ...(preset.data.data ? { data: preset.data.data } : {}),
     });
   });
 });

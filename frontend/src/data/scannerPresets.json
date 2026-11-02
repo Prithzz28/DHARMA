@@ -1,110 +1,104 @@
 {
-  "generated_at": "2026-10-19",
+  "generated_at": "2026-11-01",
   "generated_by": "backend/scripts/build_scanner_presets.py",
-  "threshold": 0.8,
-  "source": "Real labelled transactions from the DeFiTransLyzer dataset (sender, hash, value, gas, block and log count from the dataset; recipient is a placeholder).",
+  "threshold": 0.5948,
+  "source": "Real labelled transactions from held-out addresses of the DeFiGuard dataset (all form fields taken from the original transaction).",
   "selection": "Rows whose /scan verdict matches their label; agreement rate over all candidates below.",
   "agreement": {
     "fraud": {
-      "candidates": 311,
-      "correct": 309,
-      "rate": 0.9936
+      "candidates": 393,
+      "correct": 334,
+      "rate": 0.8499
     },
     "legit": {
-      "candidates": 286,
-      "correct": 182,
-      "rate": 0.6364
+      "candidates": 397,
+      "correct": 339,
+      "rate": 0.8539
     }
   },
   "presets": [
     {
-      "label": "Fraud \u00b7 contract call (3 logs)",
+      "label": "Fraud \u00b7 0 ETH transfer",
       "expected": "BLOCKED",
-      "probability": 0.962647,
+      "probability": 0.801492,
       "data": {
-        "from": "0xc1E6e4D9Fc0B7e555bb8634BcACc9A1067bEC039",
-        "to": "0x01f75bcf3fbda3ff7a73703411a2aa3f851dc6d5",
+        "from": "0x5829f3a61c5d0cbb0139b5d1fd8661ac9561261a",
+        "to": "0xa9fa7065701181d2d62234badea16a33052fea22",
         "amount": "0",
-        "gasPrice": "6",
-        "gasLimit": "111072",
-        "blockNumber": "7540868",
-        "hash": "0xc0f7f931cb30bf05cb0c476d89f0c21552af33898dfcaeb818d40ca6b38b5e6b",
-        "logCount": "3"
-      }
-    },
-    {
-      "label": "Fraud \u00b7 13.6451 ETH transfer",
-      "expected": "BLOCKED",
-      "probability": 0.972156,
-      "data": {
-        "from": "0xF4a2eFf88a408ff4c4550148151c33c93442619e",
-        "to": "0x43b1641253ef8622afa5995ce2de909cd3bbab97",
-        "amount": "13.6451",
-        "gasPrice": "12",
-        "gasLimit": "30001",
-        "blockNumber": "5736068",
-        "hash": "0xd0577a39ec38584ecc2520957ea2bcbd02106ff5baa58cf0b848b4cf0913b489",
-        "logCount": "0"
-      }
-    },
-    {
-      "label": "Fraud \u00b7 contract call (5 logs)",
-      "expected": "BLOCKED",
-      "probability": 0.967685,
-      "data": {
-        "from": "0xbb53be0690ae7256833099a1f01125eb33445692",
-        "to": "0x3ab01de17556bd603ac8e2e244314ccfec51509e",
-        "amount": "3",
         "gasPrice": "60",
-        "gasLimit": "202035",
-        "blockNumber": "5013845",
-        "hash": "0x998a21a68b7ac9844fab76ff5dc381ac2683e01739ef33b77059b40b99321d85",
-        "logCount": "5"
+        "gasLimit": "100000",
+        "nonce": "18",
+        "data": ""
       }
     },
     {
-      "label": "Legit \u00b7 contract call (6 logs)",
-      "expected": "SAFE",
-      "probability": 0.473951,
+      "label": "Fraud \u00b7 0.0003 ETH transfer",
+      "expected": "BLOCKED",
+      "probability": 0.705496,
       "data": {
-        "from": "0x3a5c819973eb3f40ee88031cb888a8d5ac792d8c",
-        "to": "0xd6e7aebce3cd7016e6700f9913e16ad5c7740337",
+        "from": "0x181c71726f12ce2514e8b93019eb22645a79f966",
+        "to": "0x3fd432ac6815bf5a44467979f6b71d312f03a5c8",
+        "amount": "0.0003",
+        "gasPrice": "23",
+        "gasLimit": "21000",
+        "nonce": "42",
+        "data": ""
+      }
+    },
+    {
+      "label": "Fraud \u00b7 0.0005 ETH transfer",
+      "expected": "BLOCKED",
+      "probability": 0.819278,
+      "data": {
+        "from": "0x6b71e5570deb839e586a060eba8c6d72f7183660",
+        "to": "0x181c71726f12ce2514e8b93019eb22645a79f966",
+        "amount": "0.0005",
+        "gasPrice": "6.805",
+        "gasLimit": "41000",
+        "nonce": "6",
+        "data": ""
+      }
+    },
+    {
+      "label": "Legit \u00b7 0 ETH transfer",
+      "expected": "SAFE",
+      "probability": 0.546215,
+      "data": {
+        "from": "0x06d96ffb25de07ba75306fb316a3c9b7b23e1f4f",
+        "to": "0xbeb3ae33fb32665954701d3dd1ca5c5faf9fc4f5",
         "amount": "0",
-        "gasPrice": "31",
-        "gasLimit": "133079",
-        "blockNumber": "3958007",
-        "hash": "0x65ab4c36fd7589df58c55477f045dfdbc32771c6f40244884a12560a380479b8",
-        "logCount": "6"
-      }
-    },
-    {
-      "label": "Legit \u00b7 1.85738 ETH transfer",
-      "expected": "SAFE",
-      "probability": 0.425956,
-      "data": {
-        "from": "0x1d429fb5a9287c2ede85fb71ea037312b5805a1d",
-        "to": "0xc58940249ab8a8aee0597484eeb34c1d3c1ba829",
-        "amount": "1.85738",
         "gasPrice": "20",
-        "gasLimit": "30001",
-        "blockNumber": "3902820",
-        "hash": "0x58ce1543d002dbd5529ecc90cf267ed4cbb239148028e1676656e9c824a735d0",
-        "logCount": "0"
+        "gasLimit": "1000000",
+        "nonce": "169",
+        "data": ""
       }
     },
     {
-      "label": "Legit \u00b7 contract call (9 logs)",
+      "label": "Legit \u00b7 0.0001 ETH transfer",
       "expected": "SAFE",
-      "probability": 0.123094,
+      "probability": 0.556792,
       "data": {
-        "from": "0x00062d1dd1afb6fb02540ddad9cdebfe568e0d89",
-        "to": "0x87bd539fb4cfc00d471930836966227e7f29303e",
-        "amount": "0.02",
-        "gasPrice": "3",
-        "gasLimit": "762070",
-        "blockNumber": "3745601",
-        "hash": "0xb9f1c1789b3dfd2442fd35c549474237499f648b971e8086df60b2204c81aa8d",
-        "logCount": "9"
+        "from": "0x24896b0180d6a33fb5205c9cbf72e65a4f762c9f",
+        "to": "0x263b75819c6987ad847528f97823556a76053b8a",
+        "amount": "0.0001",
+        "gasPrice": "2",
+        "gasLimit": "25200",
+        "nonce": "202",
+        "data": ""
+      }
+    },
+    {
+      "label": "Legit \u00b7 0.00011 ETH transfer",
+      "expected": "SAFE",
+      "probability": 0.534388,
+      "data": {
+        "from": "0x24896b0180d6a33fb5205c9cbf72e65a4f762c9f",
+        "to": "0x88d1164fe46d0daac177848559a3ee98d8663e2c",
+        "amount": "0.00011",
+        "gasPrice": "4",
+        "gasLimit": "25200",
+        "nonce": "215",
+        "data": ""
       }
     }
   ]

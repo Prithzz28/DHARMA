@@ -21,7 +21,7 @@ def _deterministic_settings(monkeypatch: pytest.MonkeyPatch):
     """Pin settings so local .env values never change test outcomes, never call
     the real Groq API (tests opt in with a mock transport), and disable the
     request rate limit unless a test enables it."""
-    monkeypatch.setattr(settings, "fraud_threshold", 0.80)
+    monkeypatch.setattr(settings, "fraud_threshold", None)  # use the model's per-mode thresholds
     monkeypatch.setattr(settings, "groq_api_key", "")
     monkeypatch.setattr(settings, "groq_model", "openai/gpt-oss-120b")
     monkeypatch.setattr(settings, "llm_max_calls_per_minute", 20)

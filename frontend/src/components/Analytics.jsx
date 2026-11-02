@@ -244,7 +244,7 @@ export default function Analytics() {
 
           <ChartCard
             title="Training Dataset Composition"
-            subtitle="Labelled transactions in the DeFiTransLyzer dataset"
+            subtitle="Labelled transactions in the leakage-controlled DeFiGuard dataset"
             delay={0.8}
             inView={inView}
           >

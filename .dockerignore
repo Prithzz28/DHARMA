@@ -1,0 +1,11 @@
+# Only backend/ is copied into the image; keep the build context small.
+*
+!backend/
+backend/tests/
+backend/scripts/
+backend/data/
+backend/outputs/
+backend/models/random_forest_fraud_model.joblib
+**/__pycache__/
+**/*.py[cod]
+**/.env

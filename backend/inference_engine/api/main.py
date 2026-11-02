@@ -8,14 +8,15 @@ encoder with cross-attention fusion).
 
 Endpoints
 ---------
-POST /scan              Score a transaction from user-level parameters
+POST /scan              Score a pending transaction from user-level parameters
                         (server-side feature extraction → DeFiGuard → optional
                         explanation). Used by the dashboard.
-POST /predict           Score a pre-extracted 20-feature vector.
+POST /predict           Score a raw JSON-RPC transaction, optionally with its
+                        receipt (pending vs receipt mode).
 POST /predict/explain   /predict plus a risk explanation (response includes the
                         prediction). Alias: POST /api/transactions/explain.
-POST /extract           Raw JSON-RPC transaction → 20-feature vector.
-GET  /health            Liveness / readiness — model status and threshold.
+POST /extract           Raw JSON-RPC payload → DeFiGuard feature vector.
+GET  /health            Liveness / readiness — model status and thresholds.
 GET  /stats             Live counters since startup.
 
 Scoring endpoints (/scan, /predict*, /extract) are rate limited per client IP
@@ -41,23 +42,24 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from feature_extractor.extractor import ExtractionError, extract_features
+from feature_extractor.extractor import ExtractionError, extract_features, split_payload
 from inference_engine.api.dependencies import get_app_state, get_defiguard_model
 from inference_engine.api.schemas import (
     ExtractionRequest,
+    ExtractionResponse,
     HealthResponse,
+    PredictRequest,
     PredictionResponse,
     RiskExplanationRequest,
     RiskExplanationResponse,
     ScanRequest,
     ScanResponse,
     StatsResponse,
-    TransactionFeatures,
 )
 from inference_engine.core.config import obsolete_settings_in_use, settings
 from inference_engine.core.rate_limit import rate_limited
 from inference_engine.services.explainer import explain_transaction_risk
-from inference_engine.services.prediction import run_inference
+from inference_engine.services.prediction import run_inference, threshold_for
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -83,7 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Startup: loading DeFiGuard model from %s", settings.defiguard_model_path)
     try:
         get_app_state().load_defiguard(settings.defiguard_model_path)
-        logger.info("Startup: ready. Fraud threshold: %.2f", settings.fraud_threshold)
+        logger.info("Startup: ready. Threshold override: %s", settings.fraud_threshold)
     except Exception as exc:  # noqa: BLE001 — start degraded so /health can report it
         logger.critical(
             "STARTUP DEGRADED — DeFiGuard model could not be loaded (%s: %s). "
@@ -101,10 +103,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Web3 Transaction Firewall — DeFiGuard Inference Engine",
     description=(
-        "Real-time fraud scoring API for Ethereum transactions. Scores a "
-        "DeFiTransLyzer feature vector with the DeFiGuard model (GATv2 graph "
-        "encoder + tabular encoder with cross-attention fusion). The block "
-        "threshold is configured via ``FRAUD_THRESHOLD``."
+        "Real-time fraud scoring API for Ethereum transactions. Pending "
+        "transactions are scored from pre-execution features; transactions "
+        "with a receipt are scored by the full DeFiGuard model (GATv2 receipt "
+        "ego-graph + tabular encoder with cross-attention fusion). Block "
+        "thresholds ship with the model; ``FRAUD_THRESHOLD`` overrides them."
     ),
     version="3.0.0",
     lifespan=lifespan,
@@ -138,34 +141,29 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
 # --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
-def _dg_graph_context(tx_payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Raw fields passed to DeFiGuard's ego-graph builder.
-
-    Sender/recipient address nodes are deliberately NOT included. DeFiGuard was
-    trained on receipt graphs that also carried token-holding nodes from a token
-    database that is unavailable for pending transactions; with address nodes
-    but no token nodes its score collapses to ~0.014 for every input (measured).
-    The address signals still reach the model through the tabular features
-    (length_to, is_same_address). The transaction-node graph is also the
-    configuration measured by scripts/evaluate_model.py.
-    """
-    return {k: tx_payload[k] for k in ("nonce", "logs") if k in tx_payload}
-
-
-def _scan_to_tx_payload(req: ScanRequest) -> Dict[str, Any]:
-    """Convert user-level scan parameters into a JSON-RPC style pending transaction."""
+def _scan_to_tx(req: ScanRequest) -> Dict[str, Any]:
+    """Convert user-level scan parameters into a JSON-RPC pending transaction."""
+    data = req.data.strip()
     return {
         "from": req.from_address.strip() or None,
         "to": req.to_address.strip() or None,
-        "hash": req.tx_hash.strip() or None,
-        "value": int(round(req.value_eth * 1e18)),
-        "gas": req.gas_limit,
-        "gasPrice": int(round(req.gas_price_gwei * 1e9)),
-        "blockNumber": req.block_number,
-        "chainId": req.chain_id,
-        "nonce": req.nonce,
-        "logs": [{} for _ in range(req.log_count)],
+        "value": hex(int(round(req.value_eth * 1e18))),
+        "gas": hex(req.gas_limit),
+        "gasPrice": hex(int(round(req.gas_price_gwei * 1e9))),
+        "nonce": hex(req.nonce),
+        "input": data if data.startswith("0x") else "0x" + data,
+        "chainId": hex(req.chain_id),
     }
+
+
+async def _score(model: Any, tx: Dict[str, Any], receipt: Any) -> PredictionResponse:
+    """run_inference with malformed input reported as 422."""
+    try:
+        prediction = await run_inference(model, tx, receipt)
+    except ExtractionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    get_app_state().record_prediction(prediction.is_fraud, prediction.exec_time_ms)
+    return prediction
 
 
 @app.post(
@@ -180,14 +178,13 @@ async def scan(
     model: Any = Depends(get_defiguard_model),
 ) -> ScanResponse:
     """Build a pending transaction from the given parameters, extract the
-    DeFiTransLyzer features server-side, score them with DeFiGuard and, when
-    ``explain`` is true, generate a risk explanation — rule-based unless
-    ``use_llm`` is true and a Groq key is configured.
+    pre-execution features server-side, score them with DeFiGuard (pending
+    mode) and, when ``explain`` is true, generate a risk explanation —
+    rule-based unless ``use_llm`` is true and a Groq key is configured.
     """
-    tx_payload = _scan_to_tx_payload(request)
-    features = extract_features(tx_payload)
-    prediction = await run_inference(model, features, raw_tx=_dg_graph_context(tx_payload))
-    get_app_state().record_prediction(prediction.is_fraud, prediction.exec_time_ms)
+    tx = _scan_to_tx(request)
+    features = extract_features(tx)
+    prediction = await _score(model, tx, None)
 
     explanation = None
     if request.explain:
@@ -196,8 +193,9 @@ async def scan(
                 features=features,
                 is_fraud=prediction.is_fraud,
                 fraud_probability=prediction.fraud_probability,
-                raw_from=tx_payload["from"],
-                raw_to=tx_payload["to"],
+                threshold=prediction.threshold,
+                raw_from=tx["from"],
+                raw_to=tx["to"],
                 use_llm=request.use_llm,
             )
         )
@@ -224,16 +222,16 @@ async def explain_risk(
 ) -> RiskExplanationResponse:
     """Score transaction risk with DeFiGuard and generate a plain-language
     explanation. The response includes the ``prediction`` it is based on."""
-    features_dict = request.features.model_dump()
-    prediction = await run_inference(model, features_dict)
-    get_app_state().record_prediction(prediction.is_fraud, prediction.exec_time_ms)
-
+    prediction = await _score(model, request.tx, request.receipt)
+    features = extract_features({"tx": request.tx, "receipt": request.receipt})
     explanation = await explain_transaction_risk(
-        features=features_dict,
+        features=features,
         is_fraud=prediction.is_fraud,
         fraud_probability=prediction.fraud_probability,
-        raw_from=request.raw_from,
-        raw_to=request.raw_to,
+        threshold=prediction.threshold,
+        raw_from=request.tx.get("from"),
+        raw_to=request.tx.get("to"),
+        use_llm=request.use_llm,
     )
     return RiskExplanationResponse(**explanation, prediction=prediction)
 
@@ -241,27 +239,24 @@ async def explain_risk(
 @app.post(
     "/predict",
     response_model=PredictionResponse,
-    summary="Score a transaction feature vector",
+    summary="Score a raw transaction (optionally with its receipt)",
     tags=["Inference"],
     dependencies=[Depends(rate_limited)],
 )
 async def predict(
-    features: TransactionFeatures,
+    request: PredictRequest,
     model: Any = Depends(get_defiguard_model),
 ) -> PredictionResponse:
-    """Receive a pre-extracted DeFiTransLyzer feature vector and return the verdict:
+    """Score a raw JSON-RPC transaction and return the verdict:
 
-    - **is_fraud**: `true` if `fraud_probability` exceeds `threshold`.
+    - **mode**: `pending` (no receipt: pre-execution features) or `receipt`
+      (full DeFiGuard over the receipt ego-graph).
+    - **is_fraud**: `true` if `fraud_probability` reaches `threshold`.
     - **fraud_probability**: DeFiGuard fraud probability (0–1).
-    - **threshold**: The configured block threshold.
+    - **threshold**: The block threshold for this mode.
     - **exec_time_ms**: Inference latency in milliseconds.
-
-    DeFiGuard scores the features with a transaction-node ego-graph (see
-    ``_dg_graph_context``), exactly as for **/scan**.
     """
-    result = await run_inference(model, features.model_dump())
-    get_app_state().record_prediction(result.is_fraud, result.exec_time_ms)
-    return result
+    return await _score(model, request.tx, request.receipt)
 
 
 @app.get(
@@ -277,7 +272,10 @@ async def health() -> HealthResponse:
         status="ok" if state.defiguard_loaded else "degraded",
         model_loaded=state.defiguard_loaded,
         model_path=state.defiguard_model_path,
-        fraud_threshold=settings.fraud_threshold,
+        thresholds=(
+            {m: threshold_for(state.defiguard_model, m) for m in ("pending", "receipt")}
+            if state.defiguard_loaded else {}
+        ),
         llm_configured=bool(settings.groq_api_key),
         llm_model=settings.groq_model,
     )
@@ -307,18 +305,20 @@ async def stats() -> StatsResponse:
 
 @app.post(
     "/extract",
-    response_model=Dict[str, float],
-    summary="Extract DeFiTransLyzer features from a raw Ethereum transaction",
+    response_model=ExtractionResponse,
+    summary="Extract DeFiGuard features from a raw Ethereum transaction",
     tags=["Inference"],
     dependencies=[Depends(rate_limited)],
 )
-async def extract(request: ExtractionRequest) -> Dict[str, float]:
-    """Convert a raw JSON-RPC Ethereum transaction payload into the 20-feature
-    DeFiTransLyzer vector consumed by /predict. Raises 422 if malformed."""
+async def extract(request: ExtractionRequest) -> ExtractionResponse:
+    """Convert a raw JSON-RPC payload into DeFiGuard's feature vector (receipt
+    features are 0 in pending mode). Raises 422 if malformed."""
     try:
-        return extract_features(request.tx_payload)
+        _, receipt = split_payload(request.tx_payload)
+        features = extract_features(request.tx_payload)
     except ExtractionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ExtractionResponse(mode="receipt" if receipt else "pending", features=features)
 
 
 # --------------------------------------------------------------------------- #

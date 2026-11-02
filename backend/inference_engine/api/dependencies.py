@@ -67,11 +67,14 @@ class AppState:
         predictor = joblib.load(path)
         if not isinstance(predictor, DeFiGuardPredictor):
             raise TypeError(f"expected DeFiGuardPredictor, got {type(predictor).__name__}")
-        predictor.get_model()  # build the network now so weight mismatches fail at startup
+        if not hasattr(predictor, "score"):
+            raise TypeError("model file predates DeFiGuard v2 (no pending/receipt modes); re-export it")
+        predictor._get_models()  # build the networks now so weight mismatches fail at startup
         self.defiguard_model = predictor
         self.defiguard_model_path = str(path.resolve())
         self.defiguard_loaded = True
-        logger.info("DeFiGuard loaded (GATv2 graph encoder + cross-attention fusion).")
+        logger.info("DeFiGuard loaded — receipt mode (GATv2 + cross-attention), pending mode (MLP); "
+                    "thresholds %s.", predictor.thresholds)
 
 
 # ---------------------------------------------------------------------------

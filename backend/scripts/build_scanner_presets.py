@@ -3,80 +3,54 @@
 """
 scripts/build_scanner_presets.py
 =================================
-Build the dashboard scanner's example transactions from **real labelled
-transactions** in the DeFiTransLyzer dataset, so each example's expected
-verdict is its ground-truth label rather than an invented scenario.
+Build the dashboard scanner's example transactions from **real labelled,
+held-out transactions** of the DeFiGuard research dataset, so each example's
+expected verdict is its ground-truth label rather than an invented scenario.
 
-For each sampled row the scanner form fields are reconstructed (value, gas
-price, gas limit, block, log count, sender, tx hash), scored through the real
-``POST /scan`` path, and only rows whose verdict matches their label are kept
-as presets. The overall agreement rate across all candidates is recorded in
-the output, so the selection is transparent.
-
-The dataset has no recipient-address column. A fixed placeholder recipient is
-used; it does not affect the score (only its length and whether it equals the
-sender are model inputs).
+Candidates come from the fold-0 test addresses (never seen in training or
+threshold selection). For each, the scanner form fields are taken from the
+original transaction (sender, recipient, value, gas price, gas limit, nonce,
+calldata), scored through the real ``POST /scan`` path, and only rows whose
+verdict matches their label are kept as presets. The agreement rate across
+all candidates is recorded in the output, so the selection is transparent.
 
 Usage (from backend/):
     PYTHONPATH=. ../.venv/bin/python scripts/build_scanner_presets.py \\
-        --csv-dir /path/to/CSVs --out ../frontend/src/data/scannerPresets.json
+        --dataset-dir /path/to/Dataset --out ../frontend/src/data/scannerPresets.json
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import math
 import random
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
+import numpy as np
 from fastapi.testclient import TestClient
 
 from inference_engine.api.dependencies import get_app_state
 from inference_engine.api.main import app
 from inference_engine.core.config import settings
+from models.features import hex_to_int, split_rpc_result
 
-COLUMNS = [
-    "address", "hash", "flag", "value", "effective_gas_price", "gas_used",
-    "block_number", "length_log", "chain_id", "is_same_address", "length_to",
-]
-
-
-def placeholder_recipient(tx_hash: str) -> str:
-    """Stand-in recipient derived from the tx hash.
-
-    The dataset has no recipient column; any 42-character address that differs
-    from the sender scores identically. A hash-derived address avoids special
-    addresses (e.g. 0x…01 is the ecrecover precompile) that an LLM explanation
-    could misinterpret.
-    """
-    return "0x" + hashlib.sha256(tx_hash.encode()).hexdigest()[:40]
-#: The scanner estimates gas used as 70% of the gas limit for pending txs.
-PENDING_GAS_USED_FRACTION = 0.7
+#: Longest calldata (hex chars) shown in the form — keeps presets readable.
+MAX_DATA_CHARS = 2 + 2 * (4 + 32 * 6)
 
 
-def sample_rows(path: Path, n: int, seed: int) -> pd.DataFrame:
-    with path.open("rb") as fh:
-        total = sum(1 for _ in fh) - 1
-    keep = set(random.Random(seed).sample(range(1, total + 1), min(n, total)))
-    return pd.read_csv(path, usecols=COLUMNS, skiprows=lambda i: i != 0 and i not in keep)
-
-
-def to_form(row: pd.Series) -> dict:
-    """Scanner form fields (strings, as typed in the UI) for a dataset row."""
-    sender = str(row["address"])
+def to_form(tx: dict) -> dict:
+    """Scanner form fields (strings, as typed in the UI) for a raw transaction."""
+    gas_price = hex_to_int(tx.get("gasPrice")) or hex_to_int(tx.get("maxFeePerGas"))
+    data = tx.get("input") or "0x"
     return {
-        "from": sender,
-        "to": sender if row["is_same_address"] == 1 else placeholder_recipient(str(row["hash"])),
-        "amount": f"{row['value'] / 1e18:.6f}".rstrip("0").rstrip("."),
-        "gasPrice": f"{row['effective_gas_price'] / 1e9:.3f}".rstrip("0").rstrip("."),
-        "gasLimit": str(math.ceil(row["gas_used"] / PENDING_GAS_USED_FRACTION)),
-        "blockNumber": str(int(row["block_number"])),
-        "hash": str(row["hash"]),
-        "logCount": str(int(row["length_log"])),
+        "from": tx["from"],
+        "to": tx["to"],
+        "amount": f"{hex_to_int(tx.get('value')) / 1e18:.6f}".rstrip("0").rstrip("."),
+        "gasPrice": f"{gas_price / 1e9:.3f}".rstrip("0").rstrip("."),
+        "gasLimit": str(hex_to_int(tx.get("gas"))),
+        "nonce": str(hex_to_int(tx.get("nonce"))),
+        "data": "" if data == "0x" else data,
     }
 
 
@@ -88,27 +62,28 @@ def to_scan_request(form: dict) -> dict:
         "value_eth": float(form["amount"] or 0),
         "gas_price_gwei": float(form["gasPrice"]),
         "gas_limit": int(form["gasLimit"]),
-        "block_number": int(form["blockNumber"]),
-        "log_count": int(form["logCount"]),
-        "tx_hash": form["hash"],
+        "nonce": int(form["nonce"] or 0),
+        "data": form["data"],
         "explain": False,
     }
 
 
 def describe(form: dict, fraud: bool) -> str:
     kind = "Fraud" if fraud else "Legit"
-    logs = int(form["logCount"])
-    action = f"contract call ({logs} logs)" if logs else f"{float(form['amount']):g} ETH transfer"
     if form["from"].lower() == form["to"].lower():
         action = "self-transfer"
+    elif form["data"]:
+        action = f"contract call ({form['data'][:10]})"
+    else:
+        action = f"{float(form['amount']):g} ETH transfer"
     return f"{kind} · {action}"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--csv-dir", required=True, type=Path)
+    parser.add_argument("--dataset-dir", required=True, type=Path, help="DeFiGuard research repository root")
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--candidates", type=int, default=400, help="rows sampled per class")
+    parser.add_argument("--candidates", type=int, default=400, help="held-out rows sampled per class")
     parser.add_argument("--per-class", type=int, default=3)
     parser.add_argument("--seed", type=int, default=29)
     args = parser.parse_args()
@@ -116,17 +91,27 @@ def main() -> None:
 
     settings.rate_limit_per_minute = 0
     get_app_state().load_defiguard(settings.defiguard_model_path)
+    model = get_app_state().defiguard_model
     client = TestClient(app)
 
+    data = np.load(args.dataset_dir / "data" / "graph_dataset_v2" / "dataset.npz")
+    heldout = set(json.loads((args.dataset_dir / "checkpoints" / "heldout_hashes.json").read_text())["hashes"])
+    is_heldout = np.isin(data["hashes"], list(heldout))
+    rng = np.random.default_rng(args.seed)
+
     presets, agreement = [], {}
-    for fraud, name in ((True, "DeFiTransLyzer_fraud.csv"), (False, "DeFiTransLyzer_legitimate.csv")):
-        df = sample_rows(args.csv_dir / name, args.candidates, args.seed).dropna()
-        # Only rows the scanner form can represent faithfully: mainnet, standard
-        # recipient address, positive gas figures.
-        df = df[(df.chain_id == 1) & (df.length_to == 42) & (df.gas_used > 0) & (df.effective_gas_price > 0)]
+    for fraud in (True, False):
+        idx = np.flatnonzero(is_heldout & (data["labels"] == int(fraud)))
         scored = []
-        for _, row in df.iterrows():
-            form = to_form(row)
+        for i in rng.choice(idx, min(args.candidates, len(idx)), replace=False):
+            with open(data["paths"][i]) as f:
+                tx, _ = split_rpc_result(json.load(f))
+            # Only transactions the form can represent: a recipient, a gas price, short calldata.
+            if not tx.get("to") or len(tx.get("input") or "0x") > MAX_DATA_CHARS:
+                continue
+            form = to_form(tx)
+            if float(form["gasPrice"] or 0) <= 0:
+                continue
             pred = client.post("/scan", json=to_scan_request(form)).json()["prediction"]
             scored.append((form, pred))
         correct = [(f, p) for f, p in scored if p["is_fraud"] == fraud]
@@ -139,7 +124,7 @@ def main() -> None:
         random.Random(args.seed).shuffle(correct)
         by_kind: dict = {}
         for form, pred in correct:
-            by_kind.setdefault(describe(form, fraud).split(" · ")[1].split(" ")[-1], []).append((form, pred))
+            by_kind.setdefault(describe(form, fraud).split(" · ")[1].split(" ")[0], []).append((form, pred))
         picked, seen = [], set()
         while len(picked) < args.per_class and any(by_kind.values()):
             for kind in sorted(by_kind):
@@ -161,9 +146,9 @@ def main() -> None:
     out = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "generated_by": "backend/scripts/build_scanner_presets.py",
-        "threshold": settings.fraud_threshold,
-        "source": "Real labelled transactions from the DeFiTransLyzer dataset (sender, hash, value, "
-                  "gas, block and log count from the dataset; recipient is a placeholder).",
+        "threshold": model.thresholds["pending"],
+        "source": "Real labelled transactions from held-out addresses of the DeFiGuard dataset "
+                  "(all form fields taken from the original transaction).",
         "selection": "Rows whose /scan verdict matches their label; agreement rate over all candidates below.",
         "agreement": agreement,
         "presets": presets,

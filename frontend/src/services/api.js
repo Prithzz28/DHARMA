@@ -76,7 +76,7 @@ async function apiFetch(endpoint, { signal, timeoutMs = REQUEST_TIMEOUT_MS, ...o
 /**
  * Backend liveness and model status (GET /health).
  * @returns {Promise<{status: string, model_loaded: boolean, model_path: string,
- *   fraud_threshold: number}>}
+ *   thresholds: {pending: number, receipt: number}}>}
  */
 export function checkHealth({ signal } = {}) {
   return apiFetch('/health', { method: 'GET', signal });
@@ -117,11 +117,8 @@ export function toScanRequest(form) {
     gas_price_gwei: Number(form.gasPrice),
     gas_limit: Number(form.gasLimit),
   };
-  const optional = { blockNumber: 'block_number', logCount: 'log_count' };
-  for (const [field, key] of Object.entries(optional)) {
-    if (String(form[field] ?? '').trim() !== '') request[key] = Number(form[field]);
-  }
-  if ((form.hash || '').trim()) request.tx_hash = form.hash.trim();
+  if (String(form.nonce ?? '').trim() !== '') request.nonce = Number(form.nonce);
+  if ((form.data || '').trim()) request.data = form.data.trim();
   return request;
 }
 
@@ -129,8 +126,7 @@ const NUMERIC_RULES = {
   amount: { label: 'Amount', integer: false, required: false, positive: false },
   gasPrice: { label: 'Gas price', integer: false, required: true, positive: true },
   gasLimit: { label: 'Gas limit', integer: true, required: true, positive: true },
-  blockNumber: { label: 'Block number', integer: true, required: false, positive: false },
-  logCount: { label: 'Log count', integer: true, required: false, positive: false },
+  nonce: { label: 'Nonce', integer: true, required: false, positive: false },
 };
 
 /**
@@ -155,8 +151,12 @@ export function validateScanForm(form) {
       errors[field] = `${rule.label} must be ${rule.positive ? 'greater than 0' : '0 or more'}.`;
     } else if (rule.integer && !Number.isInteger(value)) errors[field] = `${rule.label} must be a whole number.`;
   }
-  for (const field of ['from', 'to', 'hash']) {
+  for (const field of ['from', 'to']) {
     if ((form[field] || '').trim().length > 100) errors[field] = 'Must be at most 100 characters.';
+  }
+  const data = (form.data || '').trim();
+  if (data && !/^(0x)?([0-9a-fA-F]{2})*$/.test(data)) {
+    errors.data = 'Calldata must be hex bytes (e.g. 0xa9059cbb…).';
   }
   return errors;
 }

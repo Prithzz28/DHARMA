@@ -21,14 +21,14 @@ const steps = [
   {
     icon: Cpu,
     title: 'Feature Extraction',
-    description: 'DeFiTransLyzer extracts 20 on-chain features including structural flags, gas dynamics, and value metrics.',
+    description: 'Transaction-local features (value, gas, nonce, calldata intent) are extracted without any address history; with a receipt, token flows form an ego-graph.',
     color: 'from-teal-500 to-green-500',
     step: '03',
   },
   {
     icon: Brain,
     title: 'GNN Risk Analysis',
-    description: 'The DeFiGuard graph neural network evaluates the transaction features in milliseconds.',
+    description: 'DeFiGuard scores the transaction in milliseconds — pre-execution features before signing, plus the receipt graph when a receipt or simulation is available.',
     color: 'from-purple-500 to-violet-500',
     step: '04',
   },

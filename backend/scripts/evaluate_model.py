@@ -3,25 +3,25 @@
 """
 scripts/evaluate_model.py
 ==========================
-Measure DeFiGuard on *real* labelled transactions, restricted to the 20
-features the inference API actually receives. Used to choose the default
-``FRAUD_THRESHOLD``.
+Measure the deployed DeFiGuard model on *held-out* labelled transactions,
+through the same code path as the API.
+
+The exported model was trained on fold 0 of the research repository's
+address-disjoint protocol; its test addresses were never used for training or
+threshold selection. Their transaction hashes ship in
+``<dataset>/checkpoints/heldout_hashes.json``; the raw receipts are read from
+the research repository's ``data/graph_dataset_v2/dataset.npz`` paths.
 
 Two views are reported:
-  * receipt — the 20 features as recorded (a confirmed transaction / /predict);
-  * pending — receipt-only fields zeroed (cumulative_gas_used, index,
-    gas_efficiency), which is what /scan can know before a transaction is mined.
-
-The DeFiTransLyzer CSVs are not part of this repository; point ``--csv-dir``
-at the directory containing ``DeFiTransLyzer_fraud.csv`` and
-``DeFiTransLyzer_legitimate.csv``.
+  * pending — transaction fields only (what /scan knows before signing);
+  * receipt — transaction + receipt (full DeFiGuard over the receipt graph).
 
 Usage (from backend/):
-    PYTHONPATH=. ../.venv/bin/python scripts/evaluate_model.py --csv-dir /path/to/CSVs --n 2000 \
+    PYTHONPATH=. ../.venv/bin/python scripts/evaluate_model.py --dataset-dir /path/to/Dataset --n 2000 \
         --json-out ../frontend/src/data/modelEvaluation.json
 
 ``--json-out`` writes the measured figures the dashboard displays (metrics per
-threshold, score distribution, outcome counts at the configured threshold,
+threshold, score distribution, outcome counts at the model's threshold,
 per-transaction latency and dataset size), so every number on the site traces
 back to this script.
 """
@@ -29,43 +29,40 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from inference_engine.api.dependencies import AppState
-from inference_engine.api.schemas import TransactionFeatures
 from inference_engine.core.config import settings
-from inference_engine.services.prediction import _sync_predict
+from inference_engine.services.prediction import _sync_predict, threshold_for
+from models.features import PRE_EXEC_FEATURES, ALL_FEATURES, split_rpc_result
 
-API_FEATURES = list(TransactionFeatures.model_fields)
-THRESHOLDS = (0.5, 0.65, 0.8, 0.9)
-
-
-def count_rows(path: Path) -> int:
-    """Data rows in a CSV (line count minus the header)."""
-    with path.open("rb") as fh:
-        return sum(1 for _ in fh) - 1
+THRESHOLDS = (0.3, 0.5, 0.7, 0.9)
 
 
-def sample_rows(path: Path, n: int, seed: int) -> pd.DataFrame:
-    """Uniformly sample ~n rows from a large CSV without loading all columns."""
-    total = count_rows(path)
-    keep = set(random.Random(seed).sample(range(1, total + 1), min(n, total)))
-    return pd.read_csv(
-        path,
-        usecols=lambda c: c in API_FEATURES or c == "flag",
-        skiprows=lambda i: i != 0 and i not in keep,
-    )
+def load_heldout(dataset_dir: Path, n: int, seed: int):
+    """(tx, receipt, label) for up to n held-out transactions per class."""
+    data = np.load(dataset_dir / "data" / "graph_dataset_v2" / "dataset.npz")
+    heldout = set(json.loads((dataset_dir / "checkpoints" / "heldout_hashes.json").read_text())["hashes"])
+    labels, hashes, paths = data["labels"], data["hashes"], data["paths"]
+    rng = np.random.default_rng(seed)
+    rows = []
+    for label in (1, 0):
+        idx = np.flatnonzero((labels == label) & np.isin(hashes, list(heldout)))
+        for i in rng.choice(idx, min(n, len(idx)), replace=False):
+            with open(paths[i]) as f:
+                tx, receipt = split_rpc_result(json.load(f))
+            rows.append((tx, receipt, int(label)))
+    dataset_rows = {"fraud": int(labels.sum()), "legit": int((labels == 0).sum())}
+    return rows, dataset_rows
 
 
 def metrics(y: np.ndarray, scores: np.ndarray, threshold: float) -> dict:
-    pred = scores > threshold
+    pred = scores >= threshold
     tp = int(np.sum(pred & (y == 1)))
     fp = int(np.sum(pred & (y == 0)))
     fn = int(np.sum(~pred & (y == 1)))
@@ -79,8 +76,8 @@ def metrics(y: np.ndarray, scores: np.ndarray, threshold: float) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--csv-dir", required=True, type=Path)
-    parser.add_argument("--n", type=int, default=2000, help="rows sampled per class")
+    parser.add_argument("--dataset-dir", required=True, type=Path, help="DeFiGuard research repository root")
+    parser.add_argument("--n", type=int, default=2000, help="held-out rows sampled per class")
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--json-out", type=Path, help="write dashboard figures to this JSON file")
     args = parser.parse_args()
@@ -88,45 +85,32 @@ def main() -> None:
 
     state = AppState()
     state.load_defiguard(settings.defiguard_model_path)
-
-    fraud_csv = args.csv_dir / "DeFiTransLyzer_fraud.csv"
-    legit_csv = args.csv_dir / "DeFiTransLyzer_legitimate.csv"
-    df = pd.concat(
-        [sample_rows(fraud_csv, args.n, args.seed), sample_rows(legit_csv, args.n, args.seed)],
-        ignore_index=True,
-    )
-    y = df["flag"].to_numpy().astype(int)
-    rows = (
-        df[[c for c in API_FEATURES if c in df.columns]]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0.0)
-        .to_dict("records")
-    )
-    print(f"Sampled {len(rows)} rows ({int(y.sum())} fraud / {int((y == 0).sum())} legitimate)")
-
-    views = {
-        "receipt": rows,
-        "pending": [dict(r, cumulative_gas_used=0.0, index=0.0, gas_efficiency=0.0) for r in rows],
-    }
     model = state.defiguard_model
-    threshold = settings.fraud_threshold
+
+    rows, dataset_rows = load_heldout(args.dataset_dir, args.n, args.seed)
+    y = np.array([r[2] for r in rows])
+    print(f"Held-out sample: {len(rows)} rows ({int(y.sum())} fraud / {int((y == 0).sum())} legitimate)")
+
     report: dict = {"views": {}}
-    print(f"\n{'view':<8} {'thr':>5} {'precision':>9} {'recall':>7} {'FPR':>7}")
-    for view, view_rows in views.items():
+    print(f"\n{'view':<8} {'thr':>6} {'precision':>9} {'recall':>7} {'FPR':>7}")
+    for view in ("pending", "receipt"):
+        threshold = threshold_for(model, view)
         scores, latencies = [], []
-        for r in view_rows:
+        for tx, receipt, _ in rows:
             t0 = time.perf_counter()
-            scores.append(_sync_predict(model, r, None))
+            scores.append(_sync_predict(model, tx, receipt if view == "receipt" else None)["fraud_probability"])
             latencies.append((time.perf_counter() - t0) * 1000)
         scores = np.array(scores)
         rows_out = []
         for thr in sorted(set(THRESHOLDS) | {threshold}):
             m = metrics(y, scores, thr)
             rows_out.append({"threshold": thr, **{k: round(v, 4) for k, v in m.items()}})
-            print(f"{view:<8} {thr:>5.2f} {m['precision']:>9.3f} {m['recall']:>7.3f} {m['fpr']:>7.3f}")
-        pred = scores > threshold
+            print(f"{view:<8} {thr:>6.3f} {m['precision']:>9.3f} {m['recall']:>7.3f} {m['fpr']:>7.3f}")
+        pred = scores >= threshold
         bins = np.linspace(0.0, 1.0, 11)
         report["views"][view] = {
+            "threshold": threshold,
+            "features": len(PRE_EXEC_FEATURES if view == "pending" else ALL_FEATURES),
             "metrics": rows_out,
             "outcomes": {
                 "fraud_caught": int(np.sum(pred & (y == 1))),
@@ -154,15 +138,13 @@ def main() -> None:
             {
                 "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 "generated_by": "backend/scripts/evaluate_model.py",
-                "model": "DeFiGuard",
-                "threshold": threshold,
-                "features": len(API_FEATURES),
+                "model": "DeFiGuard v2",
+                "evaluation": "held-out addresses (fold 0 of the address-disjoint protocol)",
+                # The dashboard shows the pending view (what /scan scores).
+                "threshold": report["views"]["pending"]["threshold"],
+                "features": report["views"]["pending"]["features"],
                 "sample": {"fraud": int(y.sum()), "legit": int((y == 0).sum()), "seed": args.seed},
-                # Parsed with pandas: quoted fields can span lines, so a line count would overstate.
-                "dataset_rows": {
-                    "fraud": len(pd.read_csv(fraud_csv, usecols=["flag"])),
-                    "legit": len(pd.read_csv(legit_csv, usecols=["flag"])),
-                },
+                "dataset_rows": dataset_rows,
             }
         )
         args.json_out.parent.mkdir(parents=True, exist_ok=True)

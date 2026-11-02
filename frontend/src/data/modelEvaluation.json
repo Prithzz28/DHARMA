@@ -1,200 +1,217 @@
 {
   "views": {
-    "receipt": {
-      "metrics": [
-        {
-          "threshold": 0.5,
-          "precision": 0.7378,
-          "recall": 0.9905,
-          "fpr": 0.352
-        },
-        {
-          "threshold": 0.65,
-          "precision": 0.7536,
-          "recall": 0.988,
-          "fpr": 0.323
-        },
-        {
-          "threshold": 0.8,
-          "precision": 0.7784,
-          "recall": 0.975,
-          "fpr": 0.2775
-        },
-        {
-          "threshold": 0.9,
-          "precision": 0.8071,
-          "recall": 0.927,
-          "fpr": 0.2215
-        }
-      ],
-      "outcomes": {
-        "fraud_caught": 1950,
-        "fraud_missed": 50,
-        "legit_flagged": 555,
-        "legit_passed": 1445
-      },
-      "accuracy": 0.8488,
-      "score_histogram": [
-        {
-          "range": "0-10%",
-          "fraud": 2,
-          "legit": 975
-        },
-        {
-          "range": "10-20%",
-          "fraud": 2,
-          "legit": 123
-        },
-        {
-          "range": "20-30%",
-          "fraud": 3,
-          "legit": 97
-        },
-        {
-          "range": "30-40%",
-          "fraud": 8,
-          "legit": 59
-        },
-        {
-          "range": "40-50%",
-          "fraud": 4,
-          "legit": 42
-        },
-        {
-          "range": "50-60%",
-          "fraud": 4,
-          "legit": 33
-        },
-        {
-          "range": "60-70%",
-          "fraud": 8,
-          "legit": 50
-        },
-        {
-          "range": "70-80%",
-          "fraud": 19,
-          "legit": 66
-        },
-        {
-          "range": "80-90%",
-          "fraud": 96,
-          "legit": 112
-        },
-        {
-          "range": "90-100%",
-          "fraud": 1854,
-          "legit": 443
-        }
-      ],
-      "latency_ms": {
-        "median": 3.33,
-        "p95": 5.32
-      }
-    },
     "pending": {
+      "threshold": 0.5948,
+      "features": 16,
       "metrics": [
         {
+          "threshold": 0.3,
+          "precision": 0.6417,
+          "recall": 0.9725,
+          "fpr": 0.543
+        },
+        {
           "threshold": 0.5,
-          "precision": 0.7403,
-          "recall": 0.9905,
-          "fpr": 0.3475
+          "precision": 0.764,
+          "recall": 0.9275,
+          "fpr": 0.2865
         },
         {
-          "threshold": 0.65,
-          "precision": 0.758,
-          "recall": 0.988,
-          "fpr": 0.3155
+          "threshold": 0.5948,
+          "precision": 0.8432,
+          "recall": 0.858,
+          "fpr": 0.1595
         },
         {
-          "threshold": 0.8,
-          "precision": 0.7797,
-          "recall": 0.9715,
-          "fpr": 0.2745
+          "threshold": 0.7,
+          "precision": 0.8729,
+          "recall": 0.7315,
+          "fpr": 0.1065
         },
         {
           "threshold": 0.9,
-          "precision": 0.8093,
-          "recall": 0.9445,
-          "fpr": 0.2225
+          "precision": 0.0,
+          "recall": 0.0,
+          "fpr": 0.0
         }
       ],
       "outcomes": {
-        "fraud_caught": 1943,
-        "fraud_missed": 57,
-        "legit_flagged": 549,
-        "legit_passed": 1451
+        "fraud_caught": 1716,
+        "fraud_missed": 284,
+        "legit_flagged": 319,
+        "legit_passed": 1681
       },
-      "accuracy": 0.8485,
+      "accuracy": 0.8492,
       "score_histogram": [
         {
           "range": "0-10%",
-          "fraud": 3,
-          "legit": 1009
+          "fraud": 1,
+          "legit": 107
         },
         {
           "range": "10-20%",
-          "fraud": 3,
-          "legit": 101
+          "fraud": 2,
+          "legit": 301
         },
         {
           "range": "20-30%",
-          "fraud": 3,
-          "legit": 106
+          "fraud": 52,
+          "legit": 506
         },
         {
           "range": "30-40%",
-          "fraud": 7,
-          "legit": 53
+          "fraud": 31,
+          "legit": 287
         },
         {
           "range": "40-50%",
-          "fraud": 3,
-          "legit": 36
+          "fraud": 59,
+          "legit": 226
         },
         {
           "range": "50-60%",
-          "fraud": 4,
-          "legit": 37
+          "fraud": 142,
+          "legit": 262
         },
         {
           "range": "60-70%",
-          "fraud": 6,
-          "legit": 55
+          "fraud": 250,
+          "legit": 98
         },
         {
           "range": "70-80%",
-          "fraud": 28,
-          "legit": 54
-        },
-        {
-          "range": "80-90%",
-          "fraud": 54,
+          "fraud": 477,
           "legit": 104
         },
         {
+          "range": "80-90%",
+          "fraud": 986,
+          "legit": 109
+        },
+        {
           "range": "90-100%",
-          "fraud": 1889,
-          "legit": 445
+          "fraud": 0,
+          "legit": 0
         }
       ],
       "latency_ms": {
-        "median": 3.3,
-        "p95": 5.26
+        "median": 0.51,
+        "p95": 15.78
+      }
+    },
+    "receipt": {
+      "threshold": 0.5587,
+      "features": 31,
+      "metrics": [
+        {
+          "threshold": 0.3,
+          "precision": 0.6792,
+          "recall": 0.9665,
+          "fpr": 0.4565
+        },
+        {
+          "threshold": 0.5,
+          "precision": 0.8057,
+          "recall": 0.9185,
+          "fpr": 0.2215
+        },
+        {
+          "threshold": 0.5587,
+          "precision": 0.8293,
+          "recall": 0.8815,
+          "fpr": 0.1815
+        },
+        {
+          "threshold": 0.7,
+          "precision": 0.888,
+          "recall": 0.737,
+          "fpr": 0.093
+        },
+        {
+          "threshold": 0.9,
+          "precision": 0.0,
+          "recall": 0.0,
+          "fpr": 0.0
+        }
+      ],
+      "outcomes": {
+        "fraud_caught": 1763,
+        "fraud_missed": 237,
+        "legit_flagged": 363,
+        "legit_passed": 1637
+      },
+      "accuracy": 0.85,
+      "score_histogram": [
+        {
+          "range": "0-10%",
+          "fraud": 0,
+          "legit": 225
+        },
+        {
+          "range": "10-20%",
+          "fraud": 11,
+          "legit": 398
+        },
+        {
+          "range": "20-30%",
+          "fraud": 56,
+          "legit": 464
+        },
+        {
+          "range": "30-40%",
+          "fraud": 50,
+          "legit": 215
+        },
+        {
+          "range": "40-50%",
+          "fraud": 46,
+          "legit": 255
+        },
+        {
+          "range": "50-60%",
+          "fraud": 133,
+          "legit": 141
+        },
+        {
+          "range": "60-70%",
+          "fraud": 230,
+          "legit": 116
+        },
+        {
+          "range": "70-80%",
+          "fraud": 473,
+          "legit": 85
+        },
+        {
+          "range": "80-90%",
+          "fraud": 1001,
+          "legit": 101
+        },
+        {
+          "range": "90-100%",
+          "fraud": 0,
+          "legit": 0
+        }
+      ],
+      "latency_ms": {
+        "median": 6.68,
+        "p95": 78.25
       }
     }
   },
-  "generated_at": "2026-10-19",
+  "generated_at": "2026-11-01",
   "generated_by": "backend/scripts/evaluate_model.py",
-  "model": "DeFiGuard",
-  "threshold": 0.8,
-  "features": 20,
+  "model": "DeFiGuard v2",
+  "evaluation": "held-out addresses (fold 0 of the address-disjoint protocol)",
+  "threshold": 0.5948,
+  "features": 16,
   "sample": {
     "fraud": 2000,
     "legit": 2000,
     "seed": 13
   },
   "dataset_rows": {
-    "fraud": 88793,
-    "legit": 938074
+    "fraud": 35642,
+    "legit": 35642
   }
 }

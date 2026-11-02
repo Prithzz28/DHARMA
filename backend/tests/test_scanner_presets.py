@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 The dashboard scanner's example transactions (frontend/src/data/scannerPresets.json)
-are real labelled DeFiTransLyzer rows. Each must get the verdict matching its
-label through the real /scan path with the real model — if the model, the
-feature extraction or FRAUD_THRESHOLD changes, regenerate them with
-scripts/build_scanner_presets.py.
+are real labelled transactions from held-out addresses of the DeFiGuard
+dataset. Each must get the verdict matching its label through the real /scan
+path with the real model — if the model or the feature extraction changes,
+regenerate them with scripts/build_scanner_presets.py.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 
 from inference_engine.api.dependencies import get_app_state
 from inference_engine.api.main import app
-from inference_engine.core.config import settings
 
 PRESETS_FILE = Path(__file__).resolve().parents[2] / "frontend" / "src" / "data" / "scannerPresets.json"
 PRESETS = json.loads(PRESETS_FILE.read_text())
@@ -30,9 +29,8 @@ def to_scan_request(form: dict) -> dict:
         "value_eth": float(form["amount"] or 0),
         "gas_price_gwei": float(form["gasPrice"]),
         "gas_limit": int(form["gasLimit"]),
-        "block_number": int(form["blockNumber"]),
-        "log_count": int(form["logCount"]),
-        "tx_hash": form["hash"].strip(),
+        "nonce": int(form["nonce"] or 0),
+        "data": form["data"].strip(),
     }
 
 
@@ -48,8 +46,8 @@ def test_presets_cover_both_labels():
     assert labels == {"BLOCKED", "SAFE"}
 
 
-def test_presets_generated_for_current_threshold():
-    assert PRESETS["threshold"] == settings.fraud_threshold
+def test_presets_generated_for_current_model(dg_model):
+    assert PRESETS["threshold"] == dg_model.thresholds["pending"]
 
 
 @pytest.mark.parametrize("preset", PRESETS["presets"], ids=lambda p: p["label"])

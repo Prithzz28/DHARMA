@@ -28,6 +28,11 @@ def test_env_file_loaded_regardless_of_cwd(tmp_path, monkeypatch):
     assert s.rate_limit_per_minute == 7
 
 
+def test_threshold_override_defaults_to_none(monkeypatch):
+    monkeypatch.delenv("FRAUD_THRESHOLD", raising=False)
+    assert Settings(_env_file=None).fraud_threshold is None
+
+
 def test_relative_model_path_resolves_against_backend(monkeypatch):
     monkeypatch.chdir("/")
     s = Settings(_env_file=None, defiguard_model_path=Path("models/x.joblib"))

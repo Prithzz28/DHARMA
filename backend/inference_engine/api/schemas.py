@@ -2,119 +2,60 @@
 """
 inference_engine/api/schemas.py
 ================================
-Pydantic models for strict request/response validation on the /predict
-endpoint.
+Pydantic models for strict request/response validation.
 
-Feature names mirror ``data_loader.TRANSACTION_FEATURES`` exactly so that
-the payload maps 1-to-1 to the columns the Random Forest was trained on.
-All 20 features are floats; missing fields fall back to 0.0 which is the
-safe median-imputed default used during training preprocessing.
+DeFiGuard scores *raw* JSON-RPC objects — a transaction, optionally with its
+receipt — because its receipt ego-graph cannot be rebuilt from a flat feature
+vector. Feature vectors are still returned (``features``) for transparency;
+their names are ``models.features.ALL_FEATURES``.
 """
 from __future__ import annotations
 
-from typing import Dict, Literal, Optional
+import math
+from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 #: Upper bound for address / hash strings accepted from clients.
 MAX_ID_LENGTH = 100
+#: Upper bound for hex calldata accepted by /scan (characters, 0x-prefixed).
+MAX_CALLDATA_LENGTH = 65_536
+
+Mode = Literal["pending", "receipt"]
 
 
-class TransactionFeatures(BaseModel):
-    """The 20-dimensional feature vector expected by the model.
+class PredictRequest(BaseModel):
+    """A raw transaction (eth_getTransactionByHash / eth_sendTransaction params),
+    optionally with its receipt (eth_getTransactionReceipt, or a simulation)."""
 
-    All fields are optional at the HTTP level (default 0.0) so that callers
-    that cannot derive every metric still receive a prediction rather than a
-    validation error — partial feature vectors are preferable to dropped
-    requests in a live firewall. NaN and ±Infinity are rejected.
-    """
-
-    # -- Identity / structural --------------------------------------------- #
-    length_transaction_hash: float = Field(
-        default=0.0, ge=0.0, description="Length of the transaction hash string."
-    )
-    length_to: float = Field(
-        default=0.0, ge=0.0, description="Length of the recipient address string."
-    )
-    length_from: float = Field(
-        default=0.0, ge=0.0, description="Length of the sender address string."
-    )
-    is_same_address: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="1.0 if sender == recipient."
-    )
-    index: float = Field(
-        default=0.0, ge=0.0, description="Transaction index within its block."
+    tx: Dict[str, Any] = Field(description="JSON-RPC transaction object.")
+    receipt: Optional[Dict[str, Any]] = Field(
+        default=None, description="JSON-RPC receipt. Present → receipt mode; absent → pending mode."
     )
 
-    # -- Block context ------------------------------------------------------ #
-    block_number: float = Field(
-        default=0.0, ge=0.0, description="Block height at which the transaction was included."
-    )
-    chain_id: float = Field(
-        default=1.0, ge=0.0, description="Ethereum network chain ID (1 = mainnet)."
-    )
-    cumulative_gas_used: float = Field(
-        default=0.0, ge=0.0, description="Cumulative gas consumed up to this tx in the block."
-    )
+    @field_validator("tx", "receipt")
+    @classmethod
+    def _reject_non_finite(cls, value: Any) -> Any:
+        """JSON-RPC objects carry hex strings; NaN/Infinity anywhere is malformed input."""
+        def walk(v: Any) -> None:
+            if isinstance(v, float) and not math.isfinite(v):
+                raise ValueError("NaN and Infinity are not valid JSON-RPC values")
+            if isinstance(v, dict):
+                for item in v.values():
+                    walk(item)
+            elif isinstance(v, list):
+                for item in v:
+                    walk(item)
+        walk(value)
+        return value
 
-    # -- Gas metrics -------------------------------------------------------- #
-    gas_used: float = Field(
-        default=0.0, ge=0.0, description="Gas actually consumed by this transaction."
-    )
-    gas_efficiency: float = Field(
-        default=0.0, ge=0.0,
-        description="cumulative_gas_used / gas_used (DeFiTransLyzer definition; 0 when unknown).",
-    )
-    effective_gas_price: float = Field(
-        default=0.0, ge=0.0, description="Effective gas price paid (wei)."
-    )
-    total_gas_cost: float = Field(
-        default=0.0, ge=0.0, description="gas_used × effective_gas_price (wei)."
-    )
-    gas_price_ratio: float = Field(
-        default=1.0, ge=0.0,
-        description="Paid ÷ offered gas price; 1.0 for pending transactions (as in training).",
-    )
-    gas_per_log_event: float = Field(
-        default=0.0, ge=0.0, description="Constant 0 in the training data."
-    )
-
-    # -- Value -------------------------------------------------------------- #
-    value: float = Field(
-        default=0.0, ge=0.0, description="ETH value transferred (wei)."
-    )
-    normalized_token_transfer: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="Constant 0 in the training data."
-    )
-
-    # -- Log / event activity ----------------------------------------------- #
-    log_count: float = Field(
-        default=0.0, ge=0.0, description="Constant 0 in the training data (see length_log)."
-    )
-    log_removed: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="1.0 if any logs were removed (reorg flag)."
-    )
-    length_log: float = Field(
-        default=0.0, ge=0.0, description="Number of log entries emitted (DeFiTransLyzer definition)."
-    )
-    event_activity_flag: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="1.0 if the transaction emitted any logs."
-    )
-
-    model_config = ConfigDict(allow_inf_nan=False, json_schema_extra={
+    model_config = ConfigDict(json_schema_extra={
         "example": {
-            "length_transaction_hash": 66,
-            "length_to": 42,
-            "length_from": 42,
-            "block_number": 19_500_000,
-            "gas_used": 21_000,
-            "chain_id": 1,
-            "total_gas_cost": 4_200_000_000_000,
-            "effective_gas_price": 200_000_000_000,
-            "cumulative_gas_used": 500_000,
-            "gas_price_ratio": 1.0,
-            "length_log": 0,
-            "value": 1_000_000_000_000_000_000,
+            "tx": {"from": "0x742d35cc6634c0532925a3b844bc9e7595f44e2a",
+                   "to": "0x8c5d7e12f3a4b5c6d7890abcdef3456789012cd3",
+                   "value": "0xde0b6b3a7640000", "gas": "0x5208", "gasPrice": "0x4a817c800",
+                   "nonce": "0x0", "input": "0x"},
+            "receipt": None,
         }
     })
 
@@ -122,9 +63,10 @@ class TransactionFeatures(BaseModel):
 class PredictionResponse(BaseModel):
     """DeFiGuard verdict returned by /predict, /scan and /predict/explain."""
 
-    is_fraud: bool = Field(description="True if fraud_probability exceeds the threshold.")
+    is_fraud: bool = Field(description="True if fraud_probability reaches the threshold.")
     fraud_probability: float = Field(ge=0.0, le=1.0, description="DeFiGuard fraud probability (0–1).")
-    threshold: float = Field(description="Block threshold applied (FRAUD_THRESHOLD).")
+    threshold: float = Field(description="Block threshold applied for this mode.")
+    mode: Mode = Field(description="pending = transaction only; receipt = transaction + receipt graph.")
     model: Literal["defiguard"] = Field(default="defiguard", description="Model that produced the score.")
     exec_time_ms: float = Field(ge=0.0, description="Inference latency in milliseconds.")
 
@@ -135,24 +77,17 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     model_loaded: bool = Field(description="True if the DeFiGuard model is loaded.")
     model_path: str = Field(default="", description="Resolved path of the loaded model file.")
-    fraud_threshold: float = Field(description="Probability above which a transaction is blocked.")
+    thresholds: Dict[str, float] = Field(
+        default_factory=dict, description="Block threshold per mode (pending / receipt)."
+    )
     llm_configured: bool = Field(default=False, description="True if a Groq API key is set.")
     llm_model: str = Field(default="", description="Groq model used for AI explanations.")
 
 
-class RiskExplanationRequest(BaseModel):
+class RiskExplanationRequest(PredictRequest):
     """Payload sent to POST /predict/explain or POST /api/transactions/explain."""
 
-    features: TransactionFeatures = Field(default_factory=TransactionFeatures)
-    model_config = ConfigDict(allow_inf_nan=False)
-
-    raw_from: Optional[str] = Field(
-        default=None, max_length=MAX_ID_LENGTH, description="Optional raw sender address (masked before use)."
-    )
-    raw_to: Optional[str] = Field(
-        default=None, max_length=MAX_ID_LENGTH, description="Optional raw recipient address (masked before use)."
-    )
-    amount_eth: Optional[float] = Field(default=None, ge=0.0, description="Optional ETH amount transferred.")
+    use_llm: bool = Field(default=True, description="Let the explanation use the Groq LLM (if configured).")
 
 
 class RiskExplanationResponse(BaseModel):
@@ -194,17 +129,24 @@ class ExtractionRequest(BaseModel):
 
     tx_payload: dict = Field(
         description=(
-            "Raw JSON-RPC Ethereum transaction or receipt object. "
-            "Accepts eth_sendTransaction, eth_getTransactionReceipt, or mixed formats."
+            "Pending transaction, {'tx': ..., 'receipt': ...}, a stored {'result': [receipt, tx]} "
+            "pair, or one object mixing transaction and receipt fields."
         )
     )
 
 
-class ScanRequest(BaseModel):
-    """User-level transaction parameters for POST /scan.
+class ExtractionResponse(BaseModel):
+    """Features extracted by POST /extract."""
 
-    The server converts these into a JSON-RPC style transaction, extracts the
-    DeFiTransLyzer features (``feature_extractor``), scores them and optionally
+    mode: Mode
+    features: Dict[str, float]
+
+
+class ScanRequest(BaseModel):
+    """User-level parameters of a *pending* transaction for POST /scan.
+
+    The server converts these into a JSON-RPC transaction, extracts the
+    pre-execution features (``models.features``), scores them and optionally
     explains the verdict — so feature engineering lives in one place.
     """
 
@@ -215,11 +157,12 @@ class ScanRequest(BaseModel):
     value_eth: float = Field(default=0.0, ge=0.0, le=1e9, description="Amount transferred (ETH).")
     gas_price_gwei: float = Field(gt=0.0, le=1e6, description="Gas price / max fee (Gwei).")
     gas_limit: int = Field(default=21_000, gt=0, le=100_000_000, description="Gas limit (units).")
-    block_number: int = Field(default=0, ge=0, le=10**10)
-    tx_hash: str = Field(default="", max_length=MAX_ID_LENGTH)
-    log_count: int = Field(default=0, ge=0, le=10_000)
+    nonce: int = Field(default=0, ge=0, le=10**12, description="Sender nonce of this transaction.")
+    data: str = Field(
+        default="", max_length=MAX_CALLDATA_LENGTH, pattern=r"^(0x)?([0-9a-fA-F]{2})*$",
+        description="Hex calldata (empty for a plain ETH transfer).",
+    )
     chain_id: int = Field(default=1, ge=0, le=2**32)
-    nonce: int = Field(default=0, ge=0, le=10**12)
     explain: bool = Field(default=True, description="Also generate a risk explanation.")
     use_llm: bool = Field(
         default=False, description="Let the explanation use the Groq LLM (if configured); otherwise rule-based."
@@ -232,5 +175,7 @@ class ScanResponse(BaseModel):
     features: Dict[str, float]
     prediction: PredictionResponse
     explanation: Optional[RiskExplanationResponse] = None
+
+
 ScanRequest.model_rebuild()
 ScanResponse.model_rebuild()
