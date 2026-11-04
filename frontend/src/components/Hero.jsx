@@ -207,7 +207,7 @@ export default function Hero() {
               transition={{ duration: 0.7, delay: 0.2 }}
               className="text-lg text-gray-400 leading-relaxed mb-10 max-w-xl"
             >
-              DeFiShield is a wallet RPC firewall. Before your transaction is broadcast, it checks who
+              DHARMA is a wallet RPC firewall. Before your transaction is broadcast, it checks who
               you are paying or approving, and scores the transaction with DeFiGuard, a model trained on
               transactions sent by fraud-labelled wallets.
             </motion.p>

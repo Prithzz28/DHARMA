@@ -4,7 +4,7 @@ import { HelpCircle, ChevronDown } from 'lucide-react';
 
 const faqs = [
   {
-    q: 'How does DeFiShield work?',
+    q: 'How does DHARMA work?',
     a: 'You add the DeFiGuard RPC URL to your wallet as a network. When you send a transaction it reaches the firewall before the network. Two independent checks run: counterparty checks (is the recipient, the approved spender or the token recipient a wallet labelled fraudulent, and are you granting an unlimited or approve-all permission to a plain wallet?) and the DeFiGuard model. A counterparty red flag blocks the transaction; a high model score or a softer finding forwards it with a warning in the live feed. Every other wallet call passes straight through to the Ethereum node.',
   },
   {
@@ -28,7 +28,7 @@ const faqs = [
     a: 'The model does not: it sees only the transaction itself (value, gas, nonce, calldata intent), never address history or identity. The counterparty checks compare addresses with a fixed list and ask the node whether an approved spender is a contract. The server keeps the last 50 verdicts, with addresses masked, for the live feed.',
   },
   {
-    q: 'Is DeFiShield open source?',
+    q: 'Is DHARMA open source?',
     a: 'Yes. The full codebase — the React dashboard, the FastAPI inference and RPC firewall service, feature extraction, counterparty rules and the test suite — is open source on GitHub.',
   },
 ];
@@ -110,7 +110,7 @@ export default function FAQ() {
             transition={{ delay: 0.2 }}
             className="text-gray-400 text-lg"
           >
-            Everything you need to know about DeFiShield.
+            Everything you need to know about DHARMA.
           </motion.p>
         </div>
 

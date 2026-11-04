@@ -104,7 +104,7 @@ export default function Navbar() {
                 />
               </div>
               <span className="text-xl font-bold text-white font-[Manrope]">
-                DeFi<span className="text-gradient-cyan">Shield</span>
+                <span className="text-gradient-cyan">DHARMA</span>
               </span>
             </motion.a>
           </div>

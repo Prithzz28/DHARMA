@@ -43,7 +43,7 @@ export default function Footer() {
                 View Analytics
               </motion.a>
               <motion.a
-                href="https://github.com/harshal6426/DHARMA"
+                href="https://github.com/Prithzz28/DHARMA"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-2 px-8 py-3.5 rounded-xl font-bold text-gray-300 glass border border-white/10 hover:border-cyan-500/30 hover:text-white transition-all duration-300"
@@ -64,7 +64,7 @@ export default function Footer() {
               <Shield className="w-5 h-5 text-white" />
             </div>
             <span className="text-xl font-bold text-white font-[Manrope]">
-              DeFi<span className="text-gradient-cyan">Shield</span>
+              <span className="text-gradient-cyan">DHARMA</span>
             </span>
           </a>
           <p className="text-gray-500 text-sm leading-relaxed mb-5 max-w-md">
@@ -72,7 +72,7 @@ export default function Footer() {
           </p>
           <div className="flex gap-3">
             <a
-              href="https://github.com/harshal6426/DHARMA"
+              href="https://github.com/Prithzz28/DHARMA"
               target="_blank"
               rel="noopener noreferrer"
               aria-label="GitHub"
@@ -86,7 +86,7 @@ export default function Footer() {
         {/* Bottom bar */}
         <div className="pt-6 border-t border-white/5 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-sm text-gray-600">
-            © {year} DeFiShield. All rights reserved.
+            © {year} DHARMA. All rights reserved.
           </div>
           <div className="flex items-center gap-1.5 text-sm text-gray-600">
             Built with <Heart className="w-3.5 h-3.5 text-red-500 fill-red-500 mx-0.5" /> for Web3 security

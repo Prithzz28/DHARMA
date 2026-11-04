@@ -136,7 +136,7 @@ export default function HowItWorks() {
             transition={{ delay: 0.1 }}
             className="text-4xl lg:text-5xl font-black text-white mb-4 font-[Manrope]"
           >
-            How <span className="text-gradient">DeFiShield</span> Works
+            How <span className="text-gradient">DHARMA</span> Works
           </motion.h2>
 
           <motion.p
