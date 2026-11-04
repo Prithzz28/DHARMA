@@ -9,48 +9,48 @@ import { modelMetrics } from '../data/modelMetrics';
 const features = [
   {
     icon: Scan,
-    title: 'Real-Time Transaction Scanning',
-    description: `Analyze every transaction before broadcasting to the blockchain. The model scores a transaction in ${modelMetrics.latencyMedianMs.toFixed(1)} ms (median, CPU).`,
+    title: 'Wallet RPC Firewall',
+    description: 'Add one RPC URL to your wallet. Every transaction is checked before it is broadcast; balance, gas and block lookups pass straight through.',
     color: 'from-cyan-500 to-blue-600',
     glow: 'rgba(6,182,212,0.2)',
     badge: 'Core',
   },
   {
     icon: Brain,
-    title: 'ML Fraud Detection',
-    description: 'Detect zero-day exploits using the DeFiGuard graph neural network trained on on-chain transactions and historical fraud patterns.',
+    title: 'DeFiGuard Sender-Pattern Model',
+    description: 'Scores how closely a transaction resembles ones sent by wallets labelled fraudulent, measured on wallets it never saw in training. It warns; it does not block on its own.',
     color: 'from-purple-500 to-violet-600',
     glow: 'rgba(139,92,246,0.2)',
     badge: 'ML',
   },
   {
     icon: Shield,
-    title: 'Wallet Protection',
-    description: 'Prevent malicious smart contract interactions before they drain your funds. Multi-layer defense against rug pulls and phishing.',
+    title: 'Counterparty Checks',
+    description: 'Blocks payments and approvals to 1,763 wallets labelled fraudulent, and unlimited or approve-all grants to plain wallets — a common drainer pattern.',
     color: 'from-blue-500 to-indigo-600',
     glow: 'rgba(59,130,246,0.2)',
     badge: 'Security',
   },
   {
     icon: Gauge,
-    title: 'Gas Anomaly Detection',
-    description: 'Identify suspicious gas behavior patterns. High gas ratio analysis flags transactions that deviate from protocol norms.',
+    title: 'Leakage-Controlled Evaluation',
+    description: 'Address-disjoint, time-matched test splits, and no wallet identity, history or block height in the features — so the reported numbers reflect transaction signal, not memorised wallets.',
     color: 'from-orange-500 to-amber-600',
     glow: 'rgba(245,158,11,0.2)',
-    badge: 'Detection',
+    badge: 'Research',
   },
   {
     icon: MessageSquare,
     title: 'Explainable Security',
-    description: 'Every risk assessment comes with a human-readable explanation. Know exactly why a transaction is flagged as dangerous.',
+    description: 'Every verdict says why: the counterparty rule that fired, or the transaction signals behind the model score.',
     color: 'from-green-500 to-emerald-600',
     glow: 'rgba(34,197,94,0.2)',
     badge: 'XAI',
   },
   {
     icon: Zap,
-    title: 'Lightning Fast Analysis',
-    description: `Graph + tabular model analysis in ${modelMetrics.latencyMedianMs.toFixed(1)} ms median (${modelMetrics.latencyP95Ms.toFixed(1)} ms p95) on CPU. Optional LLM explanations take longer.`,
+    title: 'Fast Enough to Sit Inline',
+    description: `Pre-execution scoring takes ${modelMetrics.latencyMedianMs.toFixed(1)} ms median (${modelMetrics.latencyP95Ms.toFixed(1)} ms p95) on CPU — the round trip to the Ethereum node dominates. Optional LLM explanations take longer.`,
     color: 'from-yellow-500 to-orange-500',
     glow: 'rgba(234,179,8,0.2)',
     badge: 'Speed',
@@ -118,7 +118,7 @@ export default function Features() {
             className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass border border-cyan-500/20 text-sm text-cyan-400 font-medium mb-6"
           >
             <Shield className="w-4 h-4" />
-            Security Protection
+            What It Does
           </motion.div>
 
           <motion.h2
@@ -127,8 +127,8 @@ export default function Features() {
             transition={{ delay: 0.1 }}
             className="text-4xl lg:text-5xl font-black text-white mb-4 font-[Manrope]"
           >
-            Everything You Need to Stay{' '}
-            <span className="text-gradient">Safe on Chain</span>
+            Two Checks on Every{' '}
+            <span className="text-gradient">Transaction</span>
           </motion.h2>
 
           <motion.p
@@ -137,7 +137,7 @@ export default function Features() {
             transition={{ delay: 0.2 }}
             className="text-gray-400 text-lg max-w-2xl mx-auto"
           >
-            Six layers of intelligent protection, working in harmony to secure every interaction with the blockchain.
+            Rules about who you pay or approve, a model of how fraud-labelled wallets transact, and the evidence behind every verdict.
           </motion.p>
         </div>
 

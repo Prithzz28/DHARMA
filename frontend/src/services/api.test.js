@@ -167,3 +167,68 @@ describe('scanner presets', async () => {
     });
   });
 });
+
+describe('wallet RPC helpers', () => {
+  it('builds the RPC URL from the API base or the page origin', async () => {
+    const { rpcUrl } = await import('./api.js');
+    expect(rpcUrl('https://api.example.com/', 'http://localhost:5173')).toBe('https://api.example.com/rpc');
+    expect(rpcUrl('', 'http://localhost:5173')).toBe('http://localhost:5173/rpc');
+  });
+
+  it('maps /rpc/info to wallet_addEthereumChain params', async () => {
+    const { addChainParams } = await import('./api.js');
+    const info = {
+      chain_id_hex: '0xaa36a7', network_name: 'Sepolia', currency_symbol: 'SepoliaETH',
+      explorer_url: 'https://sepolia.etherscan.io',
+    };
+    expect(addChainParams(info, 'https://api.example.com/rpc')).toEqual({
+      chainId: '0xaa36a7',
+      chainName: 'Sepolia (DeFiGuard)',
+      rpcUrls: ['https://api.example.com/rpc'],
+      nativeCurrency: { name: 'SepoliaETH', symbol: 'SepoliaETH', decimals: 18 },
+      blockExplorerUrls: ['https://sepolia.etherscan.io'],
+    });
+    expect(addChainParams({ ...info, explorer_url: '' }, 'x').blockExplorerUrls).toEqual([]);
+  });
+
+  it('requests the recent-interceptions feed with a limit', async () => {
+    const { fetchRecentInterceptions } = await import('./api.js');
+    const fetchSpy = mockFetch(async () => jsonResponse(200, { items: [], totals: {} }));
+    await expect(fetchRecentInterceptions({ limit: 5 })).resolves.toEqual({ items: [], totals: {} });
+    expect(fetchSpy.mock.calls[0][0]).toBe('/rpc/recent?limit=5');
+  });
+});
+
+describe('normalizeInterception', () => {
+  it('maps an older API item (model signals as `reasons`, no counterparty field)', async () => {
+    const { normalizeInterception } = await import('./api.js');
+    const old = {
+      id: 4, verdict: 'blocked', fraud_probability: 0.73, value_eth: 0,
+      from_address: '0xee0e...6c79', to_address: '0xfff9...6b14', reasons: ['Calls a token approval'],
+    };
+    const item = normalizeInterception(old);
+    expect(item.counterparty).toEqual([]);
+    expect(item.model_signals).toEqual(['Calls a token approval']);
+    expect(item.tx_hash).toBeNull();
+  });
+
+  it('fills safe defaults for missing or malformed fields', async () => {
+    const { normalizeInterception } = await import('./api.js');
+    const item = normalizeInterception({ verdict: 'exploded', value_eth: null, counterparty: 'x' });
+    expect(item).toMatchObject({
+      verdict: 'allowed', value_eth: 0, fraud_probability: 0, counterparty: [], model_signals: [],
+      from_address: '—', to_address: '—',
+    });
+  });
+
+  it('is applied to every feed item and tolerates a malformed body', async () => {
+    const { fetchRecentInterceptions } = await import('./api.js');
+    mockFetch(async () => jsonResponse(200, { items: [{ verdict: 'warned', reasons: ['r'] }] }));
+    const feed = await fetchRecentInterceptions();
+    expect(feed.items[0].model_signals).toEqual(['r']);
+    expect(feed.totals).toEqual({});
+    vi.restoreAllMocks();
+    mockFetch(async () => jsonResponse(200, { unexpected: true }));
+    await expect(fetchRecentInterceptions()).resolves.toEqual({ items: [], totals: {} });
+  });
+});

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { ArrowRight, Shield, Zap, Brain, Activity } from 'lucide-react';
+import { ArrowRight, Shield, Zap, Brain, Activity, Wallet } from 'lucide-react';
 import { modelMetrics, pct } from '../data/modelMetrics';
 
 // Animated blockchain canvas
@@ -197,7 +197,7 @@ export default function Hero() {
             >
               Protect Your{' '}
               <span className="text-gradient">Crypto</span>{' '}
-              Before You Sign.
+              Before It&apos;s Sent.
             </motion.h1>
 
             {/* Subheading */}
@@ -207,8 +207,9 @@ export default function Hero() {
               transition={{ duration: 0.7, delay: 0.2 }}
               className="text-lg text-gray-400 leading-relaxed mb-10 max-w-xl"
             >
-              DeFiShield is a real-time transaction firewall that analyzes blockchain
-              transactions before execution and detects zero-day fraud using machine learning.
+              DeFiShield is a wallet RPC firewall. Before your transaction is broadcast, it checks who
+              you are paying or approving, and scores the transaction with DeFiGuard, a model trained on
+              transactions sent by fraud-labelled wallets.
             </motion.p>
 
             {/* CTA Buttons */}
@@ -219,24 +220,24 @@ export default function Hero() {
               className="flex flex-wrap gap-4"
             >
               <motion.a
-                href="#ai-explanation"
+                href="#connect"
                 className="flex items-center gap-2 px-8 py-3.5 rounded-xl font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:shadow-2xl hover:shadow-cyan-500/30 transition-all duration-300 glow-cyan"
                 whileHover={{ scale: 1.04, y: -2 }}
                 whileTap={{ scale: 0.97 }}
               >
-                <Zap className="w-5 h-5 text-yellow-300" />
-                Launch Live Scanner
+                <Wallet className="w-5 h-5 text-yellow-300" />
+                Connect Your Wallet
                 <ArrowRight className="w-4 h-4" />
               </motion.a>
 
               <motion.a
-                href="#features"
+                href="#ai-explanation"
                 className="flex items-center gap-2 px-8 py-3.5 rounded-xl font-semibold text-gray-300 glass border border-white/10 hover:border-cyan-500/30 hover:text-white transition-all duration-300"
                 whileHover={{ scale: 1.04, y: -2 }}
                 whileTap={{ scale: 0.97 }}
               >
-                <Shield className="w-5 h-5 text-cyan-400" />
-                Architecture
+                <Zap className="w-5 h-5 text-cyan-400" />
+                Try the Scanner
               </motion.a>
             </motion.div>
 

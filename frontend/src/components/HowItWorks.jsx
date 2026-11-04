@@ -6,43 +6,43 @@ import { modelMetrics, pct } from '../data/modelMetrics';
 const steps = [
   {
     icon: Pen,
-    title: 'User Signs Transaction',
-    description: 'User initiates a transaction from their Web3 wallet. DeFiShield intercepts before broadcasting.',
+    title: 'User Sends a Transaction',
+    description: 'The user signs and sends as usual. With the DeFiGuard RPC selected, the wallet sends it to the firewall instead of straight to the network.',
     color: 'from-blue-500 to-cyan-500',
     step: '01',
   },
   {
     icon: Wifi,
-    title: 'Transaction Interceptor',
-    description: 'Our middleware captures the raw transaction payload and routes it through the analysis pipeline.',
+    title: 'RPC Interception',
+    description: 'The firewall decodes the signed transaction and recovers the sender from its signature. Every other RPC call is forwarded unchanged.',
     color: 'from-cyan-500 to-teal-500',
     step: '02',
   },
   {
     icon: Cpu,
-    title: 'Feature Extraction',
-    description: 'Transaction-local features (value, gas, nonce, calldata intent) are extracted without any address history; with a receipt, token flows form an ego-graph.',
+    title: 'Counterparty Checks',
+    description: 'Who does it pay or approve? Recipients, approved spenders and token recipients are checked against fraud-labelled wallets, and approvals to plain wallets are caught.',
     color: 'from-teal-500 to-green-500',
     step: '03',
   },
   {
     icon: Brain,
-    title: 'GNN Risk Analysis',
-    description: 'DeFiGuard scores the transaction in milliseconds — pre-execution features before signing, plus the receipt graph when a receipt or simulation is available.',
+    title: 'DeFiGuard Score',
+    description: 'The pre-execution model scores how closely the transaction resembles ones sent by fraud-labelled wallets, from transaction-local features only (no address history).',
     color: 'from-purple-500 to-violet-500',
     step: '04',
   },
   {
     icon: BarChart3,
-    title: 'Risk Score',
-    description: 'A confidence-weighted risk score is calculated (0–100%) with feature importance explainability.',
+    title: 'Verdict',
+    description: 'A counterparty red flag blocks. A high model score or a softer counterparty finding warns. Everything else is allowed.',
     color: 'from-orange-500 to-amber-500',
     step: '05',
   },
   {
     icon: CheckCircle,
-    title: 'Safe or Blocked',
-    description: 'Safe transactions proceed instantly. High-risk transactions trigger a detailed warning panel.',
+    title: 'Forward or Refuse',
+    description: 'Allowed and warned transactions go to the network. Blocked ones are never broadcast: the wallet shows the reason, and re-sending within two minutes overrides.',
     color: 'from-green-500 to-emerald-500',
     step: '06',
   },
@@ -145,8 +145,8 @@ export default function HowItWorks() {
             transition={{ delay: 0.2 }}
             className="text-gray-400 text-lg max-w-2xl mx-auto"
           >
-            A six-step pipeline from transaction signing to safe execution — the model itself scores a
-            transaction in {modelMetrics.latencyMedianMs.toFixed(1)} ms (median).
+            Six steps between your wallet and the network — the model itself scores a transaction in{' '}
+            {modelMetrics.latencyMedianMs.toFixed(1)} ms (median).
           </motion.p>
         </div>
 

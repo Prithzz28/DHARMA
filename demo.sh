@@ -224,6 +224,15 @@ curl -s -X POST http://localhost:8001/scan \
   }' | python3 -m json.tool
 CURL2
   echo ""
+
+  echo -e "${CYAN}${BOLD}3. Wallet RPC Firewall (/rpc) — add http://localhost:5173/rpc to your wallet${RESET}"
+  cat << 'CURL3'
+curl -s http://localhost:8001/rpc/info | python3 -m json.tool
+curl -s -X POST http://localhost:8001/rpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'
+CURL3
+  echo ""
 }
 
 # ---- Main ----

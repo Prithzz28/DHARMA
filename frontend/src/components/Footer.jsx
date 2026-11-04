@@ -27,11 +27,11 @@ export default function Footer() {
           <div className="absolute -bottom-20 -left-20 w-60 h-60 bg-blue-500/10 rounded-full blur-3xl" />
           <div className="relative z-10">
             <h2 className="text-3xl lg:text-4xl font-black text-white mb-4 font-[Manrope]">
-              Start Protecting Your Assets{' '}
-              <span className="text-gradient">Today</span>
+              Route Your Wallet Through{' '}
+              <span className="text-gradient">DeFiGuard</span>
             </h2>
             <p className="text-gray-400 mb-8 max-w-xl mx-auto">
-              Protect your wallet transactions in real time with machine learning intelligence and transparent risk explainability.
+              One RPC URL: counterparty checks and a sender-pattern model on every transaction you send, with the reason for every verdict. Testnet demo.
             </p>
             <div className="flex flex-wrap gap-4 justify-center">
               <motion.a

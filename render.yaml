@@ -18,6 +18,13 @@ services:
         value: "*"
       - key: RATE_LIMIT_PER_MINUTE
         value: "60"
+      # Wallet RPC firewall (POST /rpc). Set a keyed provider URL here for
+      # higher limits than the public Sepolia node; it is never exposed.
+      - key: UPSTREAM_RPC_URL
+        value: https://ethereum-sepolia-rpc.publicnode.com
+      # 1.0: the model only warns; counterparty checks block.
+      - key: RPC_BLOCK_THRESHOLD
+        value: "1.0"
 
   # Frontend dashboard — a static site, which never sleeps.
   - type: web

@@ -5,6 +5,7 @@ import { checkHealth } from '../services/api';
 
 const navLinks = [
   { name: 'Home', href: '#home' },
+  { name: 'Connect Wallet', href: '#connect' },
   { name: 'Risk Scanner', href: '#ai-explanation' },
   { name: 'Features', href: '#features' },
   { name: 'How It Works', href: '#how-it-works' },

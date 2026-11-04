@@ -160,3 +160,72 @@ export function validateScanForm(form) {
   }
   return errors;
 }
+
+// ─── Wallet RPC firewall ─────────────────────────────────────────────────────
+
+/**
+ * Absolute URL of the firewall's JSON-RPC endpoint — what users paste into
+ * their wallet. Uses VITE_API_BASE_URL when set; otherwise this page's origin,
+ * whose dev/preview proxy forwards /rpc to the inference engine.
+ */
+export function rpcUrl(baseUrl = API_BASE_URL, origin = globalThis.location?.origin ?? '') {
+  return `${(baseUrl || origin).replace(/\/+$/, '')}/rpc`;
+}
+
+/**
+ * Network details and firewall policy (GET /rpc/info).
+ * @returns {Promise<{chain_id: number, chain_id_hex: string, network_name: string,
+ *   currency_symbol: string, explorer_url: string, upstream_host: string, model_loaded: boolean,
+ *   warn_threshold: number|null, block_threshold: number, override_window_seconds: number}>}
+ */
+export function fetchRpcInfo({ signal } = {}) {
+  return apiFetch('/rpc/info', { method: 'GET', signal });
+}
+
+/**
+ * Recently scored wallet transactions, addresses masked (GET /rpc/recent).
+ * @returns {Promise<{items: Array<Object>, totals: {allowed: number, warned: number,
+ *   blocked: number, overridden: number}}>}
+ */
+export async function fetchRecentInterceptions({ limit = 20, signal } = {}) {
+  const data = await apiFetch(`/rpc/recent?limit=${limit}`, { method: 'GET', signal });
+  return {
+    items: Array.isArray(data?.items) ? data.items.map(normalizeInterception) : [],
+    totals: data?.totals ?? {},
+  };
+}
+
+const VERDICTS = ['allowed', 'warned', 'blocked', 'overridden'];
+const asList = (value) => (Array.isArray(value) ? value : []);
+const asNumber = (value) => (Number.isFinite(value) ? value : 0);
+
+/**
+ * One /rpc/recent item with every field the feed renders present and typed.
+ * Accepts older API versions too (before counterparty checks, model signals
+ * were sent as `reasons`), so a frontend deployed ahead of the API still renders.
+ */
+export function normalizeInterception(item = {}) {
+  return {
+    ...item,
+    verdict: VERDICTS.includes(item.verdict) ? item.verdict : 'allowed',
+    from_address: item.from_address ?? '—',
+    to_address: item.to_address ?? '—',
+    value_eth: asNumber(item.value_eth),
+    fraud_probability: asNumber(item.fraud_probability),
+    counterparty: asList(item.counterparty),
+    model_signals: asList(item.model_signals ?? item.reasons),
+    tx_hash: item.tx_hash ?? null,
+    upstream_error: item.upstream_error ?? null,
+  };
+}
+
+/** EIP-3085 `wallet_addEthereumChain` params for the firewall network. */
+export function addChainParams(info, url = rpcUrl()) {
+  return {
+    chainId: info.chain_id_hex,
+    chainName: `${info.network_name} (DeFiGuard)`,
+    rpcUrls: [url],
+    nativeCurrency: { name: info.currency_symbol, symbol: info.currency_symbol, decimals: 18 },
+    blockExplorerUrls: info.explorer_url ? [info.explorer_url] : [],
+  };
+}

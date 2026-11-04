@@ -21,6 +21,16 @@ CORS_ORIGINS              Comma-separated allowed origins ("*" for development).
 GROQ_API_KEY              Optional — enables LLM risk explanations.
 GROQ_MODEL                Groq chat model for explanations (default openai/gpt-oss-120b).
 LLM_MAX_CALLS_PER_MINUTE  Process-wide cap on Groq calls (0 disables the LLM).
+
+Wallet RPC firewall (POST /rpc)
+UPSTREAM_RPC_URL              Ethereum node allowed calls are forwarded to (default: public Sepolia).
+RPC_CHAIN_ID / RPC_NETWORK_NAME / RPC_CURRENCY_SYMBOL / RPC_EXPLORER_URL
+                              Network details shown to users when they add the RPC to a wallet.
+RPC_BLOCK_THRESHOLD           DeFiGuard probability from which the model alone refuses a transaction
+                              (default 1.0 = model only warns; counterparty checks block).
+FLAGGED_ADDRESSES_PATH        Counterparty denylist (default: BCCC fraud-labelled wallets).
+RPC_OVERRIDE_WINDOW_SECONDS   Re-sending a blocked transaction within this window forwards it (0 disables).
+RPC_RATE_LIMIT_PER_MINUTE     Non-transaction RPC calls allowed per client IP per minute (0 disables).
 """
 from __future__ import annotations
 
@@ -78,7 +88,29 @@ class Settings(BaseSettings):
     groq_model: str = "openai/gpt-oss-120b"
     llm_max_calls_per_minute: int = Field(default=20, ge=0)
 
-    @field_validator("defiguard_model_path")
+    # ------------------------------------------------------------------ #
+    # Wallet RPC firewall (POST /rpc)
+    # ------------------------------------------------------------------ #
+    #: Node that allowed transactions and all other RPC calls are forwarded
+    #: to. It may embed a provider key — it is never shown to clients.
+    upstream_rpc_url: str = "https://ethereum-sepolia-rpc.publicnode.com"
+    rpc_chain_id: int = Field(default=11155111, gt=0)
+    rpc_network_name: str = "Sepolia"
+    rpc_currency_symbol: str = "SepoliaETH"
+    rpc_explorer_url: str = "https://sepolia.etherscan.io"
+    #: DeFiGuard probability from which the model alone refuses a transaction.
+    #: 1.0 (default) = the model only warns; blocks come from counterparty checks.
+    #: DeFiGuard's labels are wallet-level (it scores resemblance to transactions
+    #: *sent by* fraud-labelled wallets), so it does not justify blocking a sender.
+    rpc_block_threshold: float = Field(default=1.0, gt=0.0, le=1.0)
+    #: Counterparty denylist (JSON {"addresses": [...]}); relative paths resolve against backend/.
+    flagged_addresses_path: Path = Path("inference_engine/resources/flagged_addresses.json")
+    #: Re-sending a blocked transaction within this many seconds forwards it (0 disables).
+    rpc_override_window_seconds: int = Field(default=120, ge=0)
+    #: Non-transaction RPC calls (balances, blocks, gas …) allowed per client IP per minute.
+    rpc_rate_limit_per_minute: int = Field(default=600, ge=0)
+
+    @field_validator("defiguard_model_path", "flagged_addresses_path")
     @classmethod
     def _resolve_against_backend(cls, value: Path) -> Path:
         return value if value.is_absolute() else (BACKEND_DIR / value).resolve()

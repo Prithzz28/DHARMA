@@ -16,6 +16,9 @@ POST /predict           Score a raw JSON-RPC transaction, optionally with its
 POST /predict/explain   /predict plus a risk explanation (response includes the
                         prediction). Alias: POST /api/transactions/explain.
 POST /extract           Raw JSON-RPC payload → DeFiGuard feature vector.
+POST /rpc               Wallet JSON-RPC endpoint: transaction submissions are scored
+                        and blocked / flagged / forwarded; other calls are proxied
+                        to UPSTREAM_RPC_URL. GET /rpc/info, GET /rpc/recent.
 GET  /health            Liveness / readiness — model status and thresholds.
 GET  /stats             Live counters since startup.
 
@@ -44,6 +47,7 @@ from fastapi.responses import JSONResponse
 
 from feature_extractor.extractor import ExtractionError, extract_features, split_payload
 from inference_engine.api.dependencies import get_app_state, get_defiguard_model
+from inference_engine.api.rpc import router as rpc_router
 from inference_engine.api.schemas import (
     ExtractionRequest,
     ExtractionResponse,
@@ -60,6 +64,7 @@ from inference_engine.core.config import obsolete_settings_in_use, settings
 from inference_engine.core.rate_limit import rate_limited
 from inference_engine.services.explainer import explain_transaction_risk
 from inference_engine.services.prediction import run_inference, threshold_for
+from inference_engine.services.rpc_firewall import close_upstream_client
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -94,6 +99,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             exc,
         )
     yield
+    await close_upstream_client()
     logger.info("Shutdown: inference engine stopped.")
 
 
@@ -136,6 +142,9 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
         for err in exc.errors()
     ]
     return JSONResponse(status_code=422, content={"detail": errors})
+
+
+app.include_router(rpc_router)
 
 
 # --------------------------------------------------------------------------- #

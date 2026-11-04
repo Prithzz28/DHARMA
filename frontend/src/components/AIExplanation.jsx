@@ -294,8 +294,9 @@ export default function AIExplanation() {
               transition={{ delay: 0.2 }}
               className="text-gray-400 text-lg mb-8 leading-relaxed"
             >
-              Enter transaction details or pick a preset scenario. Every scan routes through the live
-              DeFiGuard graph neural network inference API — no hardcoded rules.
+              The DeFiGuard model on its own: enter a pending transaction or pick a real held-out example,
+              and see how closely it resembles transactions sent by fraud-labelled wallets. The wallet
+              firewall adds counterparty checks on top.
             </motion.p>
 
             {/* Preset buttons */}
@@ -589,7 +590,7 @@ export default function AIExplanation() {
                   <div className="pt-4 border-t border-white/5 space-y-3">
                     <div className="flex justify-between items-center">
                       <div>
-                        <div className="text-xs text-gray-500 mb-1">Fraud Probability</div>
+                        <div className="text-xs text-gray-500 mb-1">Sender-Pattern Risk</div>
                         <div
                           className={`text-3xl font-black font-[Manrope] ${
                             result.prediction.is_fraud ? 'text-red-400' : 'text-green-400'
@@ -613,11 +614,11 @@ export default function AIExplanation() {
                         >
                           {result.prediction.is_fraud ? (
                             <>
-                              <ShieldAlert className="w-4 h-4" /> BLOCKED
+                              <ShieldAlert className="w-4 h-4" /> FLAGGED
                             </>
                           ) : (
                             <>
-                              <ShieldCheck className="w-4 h-4" /> SAFE
+                              <ShieldCheck className="w-4 h-4" /> NOT FLAGGED
                             </>
                           )}
                         </div>
@@ -628,7 +629,7 @@ export default function AIExplanation() {
                     <div
                       className="relative h-2.5 bg-white/5 rounded-full"
                       role="img"
-                      aria-label={`Fraud probability ${(result.prediction.fraud_probability * 100).toFixed(1)}%, block threshold ${(result.prediction.threshold * 100).toFixed(0)}%`}
+                      aria-label={`Sender-pattern risk ${(result.prediction.fraud_probability * 100).toFixed(1)}%, flag threshold ${(result.prediction.threshold * 100).toFixed(0)}%`}
                     >
                       <div
                         className={`h-full rounded-full ${
@@ -646,9 +647,9 @@ export default function AIExplanation() {
                     <div className="flex items-center justify-between text-[10px] text-gray-500 font-mono">
                       <span className="flex items-center gap-1">
                         <Layers className="w-3 h-3 text-purple-400" />
-                        DeFiGuard · GATv2 + tabular fusion
+                        DeFiGuard · pending mode (pre-execution features)
                       </span>
-                      <span>block threshold {(result.prediction.threshold * 100).toFixed(0)}%</span>
+                      <span>flag threshold {(result.prediction.threshold * 100).toFixed(0)}%</span>
                     </div>
 
                     {/* For dataset examples: does the verdict match the true label? */}

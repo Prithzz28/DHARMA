@@ -23,9 +23,9 @@ const histogramData = modelMetrics.scoreHistogram.map((b) => ({
 }));
 
 const outcomeData = [
-  { name: 'Fraud blocked', value: modelMetrics.outcomes.fraud_caught, color: '#22C55E' },
+  { name: 'Fraud flagged', value: modelMetrics.outcomes.fraud_caught, color: '#22C55E' },
   { name: 'Fraud missed', value: modelMetrics.outcomes.fraud_missed, color: '#EF4444' },
-  { name: 'Legit blocked', value: modelMetrics.outcomes.legit_flagged, color: '#F59E0B' },
+  { name: 'Legit flagged', value: modelMetrics.outcomes.legit_flagged, color: '#F59E0B' },
   { name: 'Legit passed', value: modelMetrics.outcomes.legit_passed, color: '#06B6D4' },
 ];
 
@@ -99,8 +99,8 @@ export default function Analytics() {
   const live = (value) => (stats ? value : '—');
   const metrics = [
     { label: 'Transactions Scanned', value: live(stats?.total_predictions.toLocaleString()), icon: Activity, color: 'text-cyan-400', bg: 'bg-cyan-500/10' },
-    { label: 'Blocked as Fraud', value: live(stats?.total_fraud.toLocaleString()), icon: ShieldAlert, color: 'text-red-400', bg: 'bg-red-500/10' },
-    { label: 'Block Rate', value: live(`${stats?.fraud_rate_pct.toFixed(1)}%`), icon: TrendingUp, color: 'text-green-400', bg: 'bg-green-500/10' },
+    { label: 'Flagged by Model', value: live(stats?.total_fraud.toLocaleString()), icon: ShieldAlert, color: 'text-red-400', bg: 'bg-red-500/10' },
+    { label: 'Model Flag Rate', value: live(`${stats?.fraud_rate_pct.toFixed(1)}%`), icon: TrendingUp, color: 'text-green-400', bg: 'bg-green-500/10' },
     { label: 'Avg Inference Time', value: live(`${stats?.avg_latency_ms.toFixed(1)} ms`), icon: Timer, color: 'text-orange-400', bg: 'bg-orange-500/10' },
   ];
 
@@ -134,7 +134,8 @@ export default function Analytics() {
             transition={{ delay: 0.2 }}
             className="text-gray-400 text-lg max-w-2xl mx-auto mb-3"
           >
-            Live activity from this inference engine, and how the model performs on real labelled transactions.
+            Live activity from this inference engine, and how the DeFiGuard model performs on held-out labelled
+            transactions. Labels are per wallet: &ldquo;fraud&rdquo; means sent by a wallet labelled fraudulent.
           </motion.p>
         </div>
 
@@ -173,7 +174,7 @@ export default function Analytics() {
         <div className="grid lg:grid-cols-2 gap-6">
           <ChartCard
             title="Precision, Recall & False Positives"
-            subtitle="By block threshold — dashed line marks the configured threshold"
+            subtitle="By model threshold — dashed line marks the configured threshold"
             delay={0.5}
             inView={inView}
           >
@@ -212,7 +213,7 @@ export default function Analytics() {
           </ChartCard>
 
           <ChartCard
-            title="Outcomes at the Block Threshold"
+            title="Outcomes at the Model Threshold"
             subtitle={`${modelMetrics.sampleSize.toLocaleString()} evaluation transactions at threshold ${modelMetrics.threshold.toFixed(2)}`}
             delay={0.7}
             inView={inView}
@@ -296,7 +297,7 @@ export default function Analytics() {
             <div className="p-4 rounded-xl bg-white/5 border border-white/5">
               <div className="text-xs text-gray-400 mb-1">Precision</div>
               <div className="text-2xl font-black text-emerald-400 font-mono">{pct(modelMetrics.precision)}</div>
-              <div className="text-[10px] text-gray-500 mt-1">FPR {pct(modelMetrics.fpr)} of legitimate txns blocked</div>
+              <div className="text-[10px] text-gray-500 mt-1">FPR {pct(modelMetrics.fpr)} of legitimate txns flagged</div>
             </div>
             <div className="p-4 rounded-xl bg-white/5 border border-white/5">
               <div className="text-xs text-gray-400 mb-1">Recall</div>

@@ -5,23 +5,31 @@ import { HelpCircle, ChevronDown } from 'lucide-react';
 const faqs = [
   {
     q: 'How does DeFiShield work?',
-    a: 'DeFiShield intercepts transactions before they are broadcast to the blockchain. It extracts transaction-local features (value, gas, nonce, calldata intent — no address history) and scores them with DeFiGuard; when a receipt or simulation is available, the receipt’s token-flow graph is analysed by its graph neural network. The entire evaluation completes in milliseconds, providing a fraud probability and a plain-language explanation of the verdict.',
+    a: 'You add the DeFiGuard RPC URL to your wallet as a network. When you send a transaction it reaches the firewall before the network. Two independent checks run: counterparty checks (is the recipient, the approved spender or the token recipient a wallet labelled fraudulent, and are you granting an unlimited or approve-all permission to a plain wallet?) and the DeFiGuard model. A counterparty red flag blocks the transaction; a high model score or a softer finding forwards it with a warning in the live feed. Every other wallet call passes straight through to the Ethereum node.',
+  },
+  {
+    q: 'What exactly does the model detect?',
+    a: 'DeFiGuard was trained on the BCCC-DeFiFraudTrans-2025 dataset, whose labels are per wallet: every transaction sent by a wallet labelled fraudulent counts as fraud. So the model scores how closely a transaction resembles ones sent by fraud-labelled wallets. That is not the same as "this transaction will hurt you" — the harm to a user usually comes from the other side of the transaction, which is why the firewall blocks on counterparty checks and lets the model only warn.',
+  },
+  {
+    q: 'Why does my new wallet get a warning on a normal transfer?',
+    a: 'Fraud-labelled wallets in the dataset tend to be young, so the model gives a high score to accounts with few past transactions: a plain transfer scores around 85% at nonce 0 and stays above the warning threshold for roughly the first 50 transactions. That is the honest limit of a sender-pattern model, and the reason it warns rather than blocks.',
   },
   {
     q: 'Can it detect new, unseen scams?',
-    a: 'To a measured extent. DeFiGuard uses transaction-level signals rather than blacklists, and it is evaluated only on wallets it never saw in training (and on later blocks than it was trained on) — the figures on this page come from those held-out wallets. Novel attack patterns that look unlike anything in the training data can still be missed.',
+    a: 'Partly. The model is evaluated only on wallets it never saw in training (and on later blocks than it was trained on), so the figures on this page are for unseen wallets — but forward-in-time accuracy is clearly lower than on the balanced sample. The counterparty list only knows the 1,763 wallets in the dataset; the approval rules catch the drainer pattern regardless of address. Scams that rely on off-chain signatures (permits, marketplace orders) never reach an RPC endpoint and cannot be seen.',
   },
   {
-    q: 'Does it require wallet transaction history?',
-    a: 'No. DeFiShield analyzes each transaction in isolation using the transaction payload and parameters at the time of signature. No wallet history or address reputation is used — addresses enter the model only through their role in the transaction.',
+    q: 'Is it safe to use with real funds?',
+    a: 'No — this is a testnet demo (Sepolia by default). Your wallet traffic, including addresses and balances, passes through this server, and the model flags too many legitimate transactions to stand guard over real money. Use a testnet wallet. (The model was trained on Ethereum mainnet transactions; its accuracy on testnets has not been measured.)',
+  },
+  {
+    q: 'Does it use my wallet history?',
+    a: 'The model does not: it sees only the transaction itself (value, gas, nonce, calldata intent), never address history or identity. The counterparty checks compare addresses with a fixed list and ask the node whether an approved spender is a contract. The server keeps the last 50 verdicts, with addresses masked, for the live feed.',
   },
   {
     q: 'Is DeFiShield open source?',
-    a: 'Yes. The full codebase — including the React frontend dashboard, FastAPI DeFiGuard inference service, feature extraction pipeline, and test suite — is fully open source on GitHub.',
-  },
-  {
-    q: 'Which blockchains are supported?',
-    a: 'The model was trained and evaluated on Ethereum Mainnet transactions. Any EVM-format payload can be scored, but accuracy on other EVM networks has not been measured.',
+    a: 'Yes. The full codebase — the React dashboard, the FastAPI inference and RPC firewall service, feature extraction, counterparty rules and the test suite — is open source on GitHub.',
   },
 ];
 
