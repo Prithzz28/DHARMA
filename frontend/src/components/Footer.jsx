@@ -7,7 +7,7 @@ export default function Footer() {
   return (
     <footer id="footer" className="relative pt-20 pb-8 border-t border-white/5">
       {/* Top glow */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-px bg-gradient-to-r from-transparent via-cyan-500/50 to-transparent" />
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-72 sm:w-96 h-px bg-gradient-to-r from-transparent via-cyan-500/50 to-transparent" />
       <div
         className="absolute top-0 left-0 right-0 h-32"
         style={{ background: 'radial-gradient(ellipse 50% 100% at 50% 0%, rgba(6,182,212,0.04) 0%, transparent 70%)' }}

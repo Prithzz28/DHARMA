@@ -97,7 +97,7 @@ function StepCard({ step, index, total }) {
             initial={{ opacity: 0 }}
             animate={inView ? { opacity: 1 } : {}}
             transition={{ delay: 0.5 }}
-            className="lg:hidden mt-4 text-cyan-500 text-xl"
+            className="sm:hidden mt-4 text-cyan-500 text-xl"
           >
             ↓
           </motion.div>
@@ -151,7 +151,7 @@ export default function HowItWorks() {
         </div>
 
         {/* Steps Timeline */}
-        <div className="grid grid-cols-2 lg:grid-cols-6 gap-8 lg:gap-4 relative">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-8 lg:gap-4 relative">
           {steps.map((step, idx) => (
             <StepCard key={step.step} step={step} index={idx} total={steps.length} />
           ))}

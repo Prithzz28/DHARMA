@@ -40,15 +40,16 @@ function CopyRow({ label, value, mono = true }) {
     }
   };
   return (
-    <div className="flex items-center justify-between gap-3 py-2.5 border-b border-white/5 last:border-0">
+    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 sm:gap-3 py-2.5 border-b border-white/5 last:border-0">
       <span className="text-xs text-gray-500 shrink-0">{label}</span>
-      <div className="flex items-center gap-2 min-w-0">
-        <span className={`text-sm text-white truncate select-all ${mono ? 'font-mono' : ''}`}>{value}</span>
+      <div className="flex items-center justify-between sm:justify-end gap-2 min-w-0">
+        {/* Wraps on phones (the URL must stay readable); truncates on wider screens. */}
+        <span className={`text-sm text-white break-all sm:truncate select-all ${mono ? 'font-mono' : ''}`}>{value}</span>
         <button
           type="button"
           onClick={copy}
           aria-label={`Copy ${label}`}
-          className="p-1.5 rounded-lg text-gray-500 hover:text-cyan-300 hover:bg-white/5 transition-colors shrink-0"
+          className="p-2.5 -mr-1 sm:p-1.5 sm:mr-0 rounded-lg text-gray-500 hover:text-cyan-300 hover:bg-white/5 transition-colors shrink-0"
         >
           {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
         </button>
@@ -160,9 +161,10 @@ export default function ConnectWallet() {
         style={{ background: 'radial-gradient(ellipse 70% 50% at 70% 40%, rgba(6,182,212,0.06) 0%, transparent 60%)' }}
       />
       <div ref={ref} className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-        <div className="grid lg:grid-cols-2 gap-12 items-start">
+        <div className="grid lg:grid-cols-2 gap-8 lg:gap-12 items-start">
           {/* ── Left: network details ─────────────────────────────────────── */}
-          <div>
+          {/* min-w-0: grid columns otherwise grow to fit long URLs / code */}
+          <div className="min-w-0">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={inView ? { opacity: 1, y: 0 } : {}}
@@ -239,7 +241,7 @@ export default function ConnectWallet() {
           </div>
 
           {/* ── Right: policy + developer snippets ────────────────────────── */}
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-6">
             <div className="glass-card rounded-2xl p-6 border border-white/10">
               <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4">How each transaction is handled</div>
               <div className="space-y-3">

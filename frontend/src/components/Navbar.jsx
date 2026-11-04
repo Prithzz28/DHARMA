@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Shield, Menu, X, Zap } from 'lucide-react';
 import { checkHealth } from '../services/api';
@@ -16,6 +16,24 @@ const navLinks = [
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Section to scroll to once the mobile menu has finished closing. Following
+  // the anchor immediately does not work: the closing animation interrupts the
+  // page's smooth scroll, leaving the user at the top with only the URL changed.
+  const pendingTarget = useRef(null);
+
+  const goToFromMenu = (event, href) => {
+    event.preventDefault();
+    pendingTarget.current = href;
+    setMobileOpen(false);
+  };
+
+  const scrollToPendingTarget = () => {
+    const href = pendingTarget.current;
+    pendingTarget.current = null;
+    if (!href) return;
+    document.querySelector(href)?.scrollIntoView({ behavior: 'smooth' });
+    window.history.pushState(null, '', href);
+  };
   const [healthStatus, setHealthStatus] = useState({
     online: false,
     modelLoaded: false,
@@ -119,9 +137,10 @@ export default function Navbar() {
 
           {/* Mobile Menu Toggle */}
           <button
-            className="lg:hidden text-gray-400 hover:text-white"
+            className="lg:hidden p-2 -mr-2 text-gray-400 hover:text-white"
             onClick={() => setMobileOpen(!mobileOpen)}
             aria-label="Toggle menu"
+            aria-expanded={mobileOpen}
           >
             {mobileOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
           </button>
@@ -129,7 +148,7 @@ export default function Navbar() {
       </div>
 
       {/* Mobile Menu */}
-      <AnimatePresence>
+      <AnimatePresence onExitComplete={scrollToPendingTarget}>
         {mobileOpen && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
@@ -142,15 +161,15 @@ export default function Navbar() {
                 <a
                   key={link.name}
                   href={link.href}
-                  onClick={() => setMobileOpen(false)}
-                  className="px-4 py-2.5 text-sm text-gray-300 hover:text-white rounded-lg hover:bg-white/5 transition-all duration-200 font-medium"
+                  onClick={(event) => goToFromMenu(event, link.href)}
+                  className="px-4 py-3 text-sm text-gray-300 hover:text-white rounded-lg hover:bg-white/5 transition-all duration-200 font-medium"
                 >
                   {link.name}
                 </a>
               ))}
               <a
                 href="#ai-explanation"
-                onClick={() => setMobileOpen(false)}
+                onClick={(event) => goToFromMenu(event, '#ai-explanation')}
                 className="mt-2 flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold bg-gradient-to-r from-cyan-500 to-blue-600 text-white"
               >
                 <Zap className="w-4 h-4" />

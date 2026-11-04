@@ -103,9 +103,16 @@ function FeatureBar({ feature, value, maxValue, index, inView }) {
       <div className="flex justify-between items-center mb-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-white">{feature.label}</span>
-          <div className="relative group/tooltip">
+          {/* Focusable so a tap opens the tooltip on touch screens (no hover there). */}
+          <div
+            className="relative group/tooltip -m-1.5 p-1.5 rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-500/50"
+            tabIndex={0}
+            role="button"
+            aria-label={`About ${feature.label}: ${feature.desc}`}
+          >
             <Info className="w-3.5 h-3.5 text-gray-600 cursor-help" />
-            <div className="absolute left-0 bottom-full mb-2 w-56 bg-[#1a2332] border border-white/10 rounded-xl p-3 text-xs text-gray-400 opacity-0 group-hover/tooltip:opacity-100 transition-opacity pointer-events-none z-10 shadow-xl">
+            {/* Centred on the icon on phones (left-anchored it runs off-screen), left-anchored from sm up. */}
+            <div className="absolute left-1/2 -translate-x-1/2 sm:left-0 sm:translate-x-0 bottom-full mb-2 w-56 bg-[#1a2332] border border-white/10 rounded-xl p-3 text-xs text-gray-400 opacity-0 group-hover/tooltip:opacity-100 group-focus/tooltip:opacity-100 transition-opacity pointer-events-none z-10 shadow-xl">
               {feature.desc}
             </div>
           </div>
